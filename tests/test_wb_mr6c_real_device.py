@@ -113,6 +113,26 @@ def _parse_parity_env(env: Mapping[str, str]) -> str:
     return parity
 
 
+def _ensure_serial_dependencies_available() -> None:
+    missing = []
+    for package, module_name in (
+        ("pymodbus==3.11.2", "pymodbus.client"),
+        ("pyserial==3.5", "serial"),
+    ):
+        try:
+            dependency_available = importlib.util.find_spec(module_name) is not None
+        except ModuleNotFoundError:
+            dependency_available = False
+        if not dependency_available:
+            missing.append(package)
+
+    if missing:
+        raise RealDeviceConfigError(
+            "OPENWB real-device tests require serial dependencies; run "
+            f"python -m pip install {' '.join(missing)}"
+        )
+
+
 class RealDeviceConfigTest(unittest.TestCase):
     def test_real_device_tests_are_disabled_by_default(self) -> None:
         self.assertIsNone(_real_device_config_from_env({}))
@@ -198,6 +218,11 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "Set OPENWB_REAL_DEVICE_TESTS=1 and OPENWB_SERIAL_PORT to run "
                 "WB-MR6C real-device smoke tests"
             )
+
+        try:
+            _ensure_serial_dependencies_available()
+        except RealDeviceConfigError as err:
+            raise unittest.SkipTest(str(err)) from err
 
         cls.config = config
 

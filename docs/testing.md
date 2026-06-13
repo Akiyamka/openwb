@@ -8,10 +8,10 @@ python -m unittest discover -s tests
 
 Real WB-MR6C smoke tests are opt-in and read-only. They open a direct Modbus RTU serial connection, so no other Modbus master should be using the same RS-485 bus.
 
-Install the integration dependency before running these tests from a bare checkout:
+Install the integration dependencies before running these tests from a bare checkout:
 
 ```sh
-python -m pip install pymodbus==3.11.2
+python -m pip install pymodbus==3.11.2 pyserial==3.5
 ```
 
 ```sh
