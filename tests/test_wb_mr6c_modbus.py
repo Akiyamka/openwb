@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -65,6 +67,119 @@ class ShortHoldingRegisterTransport(FakeTransport):
         self, address: int, count: int, device_id: int
     ) -> list[int]:
         return self.values
+
+
+class StubPymodbusResponse:
+    def __init__(
+        self,
+        *,
+        bits: list[bool] | None = None,
+        registers: list[int] | None = None,
+        error: bool = False,
+    ) -> None:
+        self.bits = bits or []
+        self.registers = registers or []
+        self.error = error
+
+    def isError(self) -> bool:  # noqa: N802
+        return self.error
+
+
+class StubPymodbusClient:
+    def __init__(self, port: str = "/dev/null", **kwargs: object) -> None:
+        self.port = port
+        self.kwargs = kwargs
+        self.connected = False
+        self.connect_result = True
+        self.connect_error: Exception | None = None
+        self.connect_calls = 0
+        self.close_calls = 0
+        self.calls: list[tuple[object, ...]] = []
+        self.responses: list[StubPymodbusResponse] = []
+        self.exceptions: dict[str, Exception] = {}
+        self.delay = 0.0
+        self.active_requests = 0
+        self.max_active_requests = 0
+
+    def queue_response(self, response: StubPymodbusResponse) -> None:
+        self.responses.append(response)
+
+    async def connect(self) -> bool:
+        self.connect_calls += 1
+        if self.connect_error is not None:
+            raise self.connect_error
+        self.connected = self.connect_result
+        return self.connect_result
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.connected = False
+
+    async def read_coils(
+        self, address: int, *, count: int = 1, device_id: int = 1
+    ) -> StubPymodbusResponse:
+        return await self._respond("read_coils", address, count, device_id)
+
+    async def write_coil(
+        self, address: int, value: bool, *, device_id: int = 1
+    ) -> StubPymodbusResponse:
+        return await self._respond("write_coil", address, value, device_id)
+
+    async def read_discrete_inputs(
+        self, address: int, *, count: int = 1, device_id: int = 1
+    ) -> StubPymodbusResponse:
+        return await self._respond(
+            "read_discrete_inputs", address, count, device_id
+        )
+
+    async def read_holding_registers(
+        self, address: int, *, count: int = 1, device_id: int = 1
+    ) -> StubPymodbusResponse:
+        return await self._respond(
+            "read_holding_registers", address, count, device_id
+        )
+
+    async def write_register(
+        self, address: int, value: int, *, device_id: int = 1
+    ) -> StubPymodbusResponse:
+        return await self._respond("write_register", address, value, device_id)
+
+    async def _respond(self, method: str, *args: object) -> StubPymodbusResponse:
+        self.calls.append((method, *args))
+        self.active_requests += 1
+        self.max_active_requests = max(
+            self.max_active_requests, self.active_requests
+        )
+        try:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            if method in self.exceptions:
+                raise self.exceptions[method]
+            if self.responses:
+                return self.responses.pop(0)
+            if method in {"read_coils", "read_discrete_inputs"}:
+                return StubPymodbusResponse(bits=[False] * int(args[1]))
+            if method == "read_holding_registers":
+                return StubPymodbusResponse(registers=[0] * int(args[1]))
+            return StubPymodbusResponse()
+        finally:
+            self.active_requests -= 1
+
+
+def _serial_transport_for_client(
+    client: StubPymodbusClient,
+) -> wb_mr6c_modbus.PymodbusSerialTransport:
+    return wb_mr6c_modbus.PymodbusSerialTransport(
+        "/dev/ttyUSB0", client_factory=lambda *args, **kwargs: client
+    )
+
+
+class ManifestTest(unittest.TestCase):
+    def test_manifest_version(self) -> None:
+        manifest_path = MODULE_PATH.parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+
+        self.assertEqual(manifest["version"], "0.2.0")
 
 
 class AddressingTest(unittest.TestCase):
@@ -209,6 +324,167 @@ class IdentificationTest(unittest.TestCase):
 
         with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
             wb_mr6c_modbus.press_counter_delta(0, 0x10000)
+
+
+class PymodbusSerialTransportTest(unittest.IsolatedAsyncioTestCase):
+    async def test_serial_transport_passes_settings_and_lifecycle(self) -> None:
+        clients: list[StubPymodbusClient] = []
+
+        def factory(port: str, **kwargs: object) -> StubPymodbusClient:
+            client = StubPymodbusClient(port, **kwargs)
+            clients.append(client)
+            return client
+
+        transport = wb_mr6c_modbus.PymodbusSerialTransport(
+            "/dev/ttyUSB0",
+            baudrate=115200,
+            parity="E",
+            stopbits=1,
+            timeout=1.5,
+            retries=1,
+            client_factory=factory,
+        )
+
+        await transport.connect()
+        await transport.close()
+
+        self.assertEqual(clients[0].port, "/dev/ttyUSB0")
+        self.assertEqual(clients[0].kwargs["baudrate"], 115200)
+        self.assertEqual(clients[0].kwargs["bytesize"], 8)
+        self.assertEqual(clients[0].kwargs["parity"], "E")
+        self.assertEqual(clients[0].kwargs["stopbits"], 1)
+        self.assertEqual(clients[0].kwargs["timeout"], 1.5)
+        self.assertEqual(clients[0].kwargs["retries"], 1)
+        self.assertEqual(clients[0].connect_calls, 1)
+        self.assertEqual(clients[0].close_calls, 1)
+        self.assertFalse(clients[0].connected)
+
+    async def test_serial_transport_reads_and_writes(self) -> None:
+        client = StubPymodbusClient()
+        transport = _serial_transport_for_client(client)
+
+        client.queue_response(StubPymodbusResponse(bits=[True, False, True]))
+        client.queue_response(StubPymodbusResponse(bits=[False, True]))
+        client.queue_response(StubPymodbusResponse(registers=[12, 34]))
+
+        self.assertEqual(await transport.read_coils(10, 3, 32), [True, False, True])
+        self.assertEqual(
+            await transport.read_discrete_inputs(20, 2, 32), [False, True]
+        )
+        self.assertEqual(await transport.read_holding_registers(30, 2, 32), [12, 34])
+
+        await transport.write_coil(40, True, 32)
+        await transport.write_register(50, 65535, 32)
+
+        self.assertIn(("read_coils", 10, 3, 32), client.calls)
+        self.assertIn(("read_discrete_inputs", 20, 2, 32), client.calls)
+        self.assertIn(("read_holding_registers", 30, 2, 32), client.calls)
+        self.assertIn(("write_coil", 40, True, 32), client.calls)
+        self.assertIn(("write_register", 50, 65535, 32), client.calls)
+
+    async def test_serial_transport_serializes_requests(self) -> None:
+        client = StubPymodbusClient()
+        client.connected = True
+        client.delay = 0.01
+        transport = _serial_transport_for_client(client)
+
+        await asyncio.gather(
+            transport.read_coils(0, 1, 1),
+            transport.read_holding_registers(0, 1, 2),
+            transport.write_coil(0, True, 3),
+        )
+
+        self.assertEqual(client.max_active_requests, 1)
+        self.assertEqual(len(client.calls), 3)
+
+    async def test_serial_transport_converts_connection_errors(self) -> None:
+        client = StubPymodbusClient()
+        client.connect_result = False
+        transport = _serial_transport_for_client(client)
+
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusConnectionError):
+            await transport.connect()
+
+        client = StubPymodbusClient()
+        client.connected = True
+        client.exceptions["read_coils"] = RuntimeError("boom")
+        transport = _serial_transport_for_client(client)
+
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusConnectionError):
+            await transport.read_coils(0, 1, 1)
+
+    async def test_serial_transport_converts_response_errors(self) -> None:
+        client = StubPymodbusClient()
+        client.connected = True
+        transport = _serial_transport_for_client(client)
+
+        client.queue_response(StubPymodbusResponse(error=True))
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await transport.read_coils(0, 1, 1)
+
+        client.queue_response(StubPymodbusResponse(bits=[True]))
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await transport.read_discrete_inputs(0, 2, 1)
+
+        client.queue_response(StubPymodbusResponse(registers=[1]))
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await transport.read_holding_registers(0, 2, 1)
+
+    async def test_serial_transport_validates_register_values(self) -> None:
+        client = StubPymodbusClient()
+        client.connected = True
+        transport = _serial_transport_for_client(client)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await transport.write_register(0, 0x10000, 1)
+
+        self.assertEqual(client.calls, [])
+
+
+class FakeModbusTransportTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fake_transport_stores_values_per_device(self) -> None:
+        transport = wb_mr6c_modbus.FakeModbusTransport()
+        await transport.connect()
+
+        transport.set_coil(0, True, device_id=32)
+        transport.set_coil(0, False, device_id=33)
+        transport.set_discrete_input(7, True, device_id=32)
+        transport.set_holding_register(200, 123, device_id=32)
+
+        self.assertTrue(transport.connected)
+        self.assertEqual(await transport.read_coils(0, 1, 32), [True])
+        self.assertEqual(await transport.read_coils(0, 1, 33), [False])
+        self.assertEqual(await transport.read_discrete_inputs(7, 1, 32), [True])
+        self.assertEqual(await transport.read_holding_registers(200, 1, 32), [123])
+
+        await transport.write_coil(1, True, 32)
+        await transport.write_register(201, 456, 32)
+
+        self.assertTrue(transport.coils[(32, 1)])
+        self.assertEqual(transport.holding_registers[(32, 201)], 456)
+        self.assertIn(("write_coil", 1, True, 32), transport.writes)
+        self.assertIn(("write_register", 201, 456, 32), transport.writes)
+
+        await transport.close()
+        self.assertFalse(transport.connected)
+
+    async def test_fake_transport_simulates_failure_responses(self) -> None:
+        unavailable = wb_mr6c_modbus.FakeModbusTransport(
+            unavailable_devices={32}
+        )
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusConnectionError):
+            await unavailable.read_coils(0, 1, 32)
+
+        response_error = wb_mr6c_modbus.FakeModbusTransport(
+            response_error_devices={32}
+        )
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await response_error.read_coils(0, 1, 32)
+
+        short = wb_mr6c_modbus.FakeModbusTransport(short_response_devices={32})
+        client = wb_mr6c_modbus.WBMR6CModbus(short, device_id=32)
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await client.read_relay_commands()
 
 
 class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):

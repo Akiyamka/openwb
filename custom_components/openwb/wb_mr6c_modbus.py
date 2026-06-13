@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Protocol, Sequence
 
 DEFAULT_DEVICE_ID = 1
 DEFAULT_MODBUS_TCP_PORT = 502
+DEFAULT_SERIAL_BAUDRATE = 9600
+DEFAULT_SERIAL_BYTESIZE = 8
+DEFAULT_SERIAL_PARITY = "N"
+DEFAULT_SERIAL_STOPBITS = 2
 
 CHANNEL_COUNT = 6
 RELAY_COUNT = CHANNEL_COUNT
@@ -186,46 +191,47 @@ class ModbusTransport(Protocol):
         """Write a single holding register."""
 
 
-class PymodbusTcpTransport:
-    """Async Modbus TCP transport backed by pymodbus."""
+class _PymodbusTransportAdapter:
+    """Shared async pymodbus transport behavior."""
 
-    def __init__(
-        self,
-        host: str,
-        port: int = DEFAULT_MODBUS_TCP_PORT,
-        *,
-        timeout: float = 3.0,
-        retries: int = 3,
-    ) -> None:
-        """Initialize the transport."""
-        from pymodbus.client import AsyncModbusTcpClient
-
-        self._client = AsyncModbusTcpClient(
-            host,
-            port=port,
-            timeout=timeout,
-            retries=retries,
-        )
+    def __init__(self, client: Any, connection_name: str) -> None:
+        """Initialize the transport adapter."""
+        self._client = client
+        self._connection_name = connection_name
         self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
-        """Open the Modbus TCP connection if needed."""
-        if self._client.connected:
-            return
+        """Open the Modbus connection if needed."""
+        try:
+            if self._client.connected:
+                return
 
-        if not await self._client.connect():
-            raise WBMR6CModbusConnectionError("Unable to connect to Modbus device")
+            connected = await self._client.connect()
+        except Exception as err:  # noqa: BLE001
+            raise WBMR6CModbusConnectionError(
+                f"Unable to connect to Modbus transport {self._connection_name}"
+            ) from err
+
+        if not connected:
+            raise WBMR6CModbusConnectionError(
+                f"Unable to connect to Modbus transport {self._connection_name}"
+            )
 
     async def close(self) -> None:
-        """Close the Modbus TCP connection."""
-        self._client.close()
+        """Close the Modbus connection."""
+        try:
+            self._client.close()
+        except Exception as err:  # noqa: BLE001
+            raise WBMR6CModbusConnectionError(
+                f"Unable to close Modbus transport {self._connection_name}"
+            ) from err
 
     async def read_coils(
         self, address: int, count: int, device_id: int
     ) -> Sequence[bool]:
         """Read coil values."""
         response = await self._execute(
-            "read_coils", address, count, device_id=device_id
+            "read_coils", address, count=count, device_id=device_id
         )
         return _extract_bits(response, count)
 
@@ -238,7 +244,7 @@ class PymodbusTcpTransport:
     ) -> Sequence[bool]:
         """Read discrete input values."""
         response = await self._execute(
-            "read_discrete_inputs", address, count, device_id=device_id
+            "read_discrete_inputs", address, count=count, device_id=device_id
         )
         return _extract_bits(response, count)
 
@@ -247,7 +253,7 @@ class PymodbusTcpTransport:
     ) -> Sequence[int]:
         """Read holding register values."""
         response = await self._execute(
-            "read_holding_registers", address, count, device_id=device_id
+            "read_holding_registers", address, count=count, device_id=device_id
         )
         return _extract_registers(response, count)
 
@@ -257,26 +263,216 @@ class PymodbusTcpTransport:
         await self._execute("write_register", address, value, device_id=device_id)
 
     async def _execute(
-        self, method_name: str, *args: Any, device_id: int
+        self, method_name: str, *args: Any, device_id: int, **kwargs: Any
     ) -> Any:
         async with self._lock:
             await self.connect()
-            method = getattr(self._client, method_name)
 
             try:
-                response = await method(*args, device_id=device_id)
+                method = getattr(self._client, method_name)
+                response = await method(*args, **kwargs, device_id=device_id)
             except Exception as err:  # noqa: BLE001
                 raise WBMR6CModbusConnectionError(
                     f"Modbus request failed: {method_name}"
                 ) from err
 
             is_error = getattr(response, "isError", None)
-            if response is None or (callable(is_error) and is_error()):
+            response_is_error = (
+                is_error
+                if isinstance(is_error, bool)
+                else callable(is_error) and is_error()
+            )
+            if response is None or response_is_error:
                 raise WBMR6CModbusResponseError(
                     f"Modbus request returned an error: {method_name}"
                 )
 
             return response
+
+
+class PymodbusSerialTransport(_PymodbusTransportAdapter):
+    """Supported async Modbus RTU serial transport backed by pymodbus."""
+
+    def __init__(
+        self,
+        port: str,
+        *,
+        baudrate: int = DEFAULT_SERIAL_BAUDRATE,
+        bytesize: int = DEFAULT_SERIAL_BYTESIZE,
+        parity: str = DEFAULT_SERIAL_PARITY,
+        stopbits: int = DEFAULT_SERIAL_STOPBITS,
+        timeout: float = 3.0,
+        retries: int = 3,
+        client_factory: Callable[..., Any] | None = None,
+    ) -> None:
+        """Initialize the serial RTU transport."""
+        try:
+            if client_factory is None:
+                from pymodbus.client import AsyncModbusSerialClient
+
+                client_factory = AsyncModbusSerialClient
+
+            client = client_factory(
+                port,
+                baudrate=baudrate,
+                bytesize=bytesize,
+                parity=parity,
+                stopbits=stopbits,
+                timeout=timeout,
+                retries=retries,
+            )
+        except Exception as err:  # noqa: BLE001
+            raise WBMR6CModbusConnectionError(
+                f"Unable to create serial Modbus client for {port}"
+            ) from err
+
+        super().__init__(client, f"serial port {port}")
+
+
+class PymodbusTcpTransport(_PymodbusTransportAdapter):
+    """Optional development Modbus TCP transport backed by pymodbus."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int = DEFAULT_MODBUS_TCP_PORT,
+        *,
+        timeout: float = 3.0,
+        retries: int = 3,
+    ) -> None:
+        """Initialize the transport."""
+        try:
+            from pymodbus.client import AsyncModbusTcpClient
+
+            client = AsyncModbusTcpClient(
+                host,
+                port=port,
+                timeout=timeout,
+                retries=retries,
+            )
+        except Exception as err:  # noqa: BLE001
+            raise WBMR6CModbusConnectionError(
+                f"Unable to create TCP Modbus client for {host}:{port}"
+            ) from err
+
+        super().__init__(client, f"TCP {host}:{port}")
+
+
+class FakeModbusTransport:
+    """In-memory Modbus transport for tests and UI development."""
+
+    def __init__(
+        self,
+        *,
+        unavailable_devices: Iterable[int] | None = None,
+        response_error_devices: Iterable[int] | None = None,
+        short_response_devices: Iterable[int] | None = None,
+    ) -> None:
+        """Initialize an empty in-memory bus."""
+        self.coils: dict[tuple[int, int], bool] = {}
+        self.discrete_inputs: dict[tuple[int, int], bool] = {}
+        self.holding_registers: dict[tuple[int, int], int] = {}
+        self.calls: list[tuple[str, int, int | bool, int]] = []
+        self.writes: list[tuple[str, int, int | bool, int]] = []
+        self.unavailable_devices = set(unavailable_devices or ())
+        self.response_error_devices = set(response_error_devices or ())
+        self.short_response_devices = set(short_response_devices or ())
+        self.connected = False
+
+    async def connect(self) -> None:
+        """Mark the fake transport connected."""
+        self.connected = True
+
+    async def close(self) -> None:
+        """Mark the fake transport closed."""
+        self.connected = False
+
+    def set_coil(
+        self, address: int, value: bool, device_id: int = DEFAULT_DEVICE_ID
+    ) -> None:
+        """Set a fake coil value."""
+        self.coils[(device_id, address)] = bool(value)
+
+    def set_discrete_input(
+        self, address: int, value: bool, device_id: int = DEFAULT_DEVICE_ID
+    ) -> None:
+        """Set a fake discrete input value."""
+        self.discrete_inputs[(device_id, address)] = bool(value)
+
+    def set_holding_register(
+        self, address: int, value: int, device_id: int = DEFAULT_DEVICE_ID
+    ) -> None:
+        """Set a fake holding register value."""
+        _validate_register_value(value)
+        self.holding_registers[(device_id, address)] = value
+
+    async def read_coils(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[bool]:
+        """Read fake coil values."""
+        self.calls.append(("read_coils", address, count, device_id))
+        self._check_device(device_id)
+        values = [
+            self.coils.get((device_id, address + offset), False)
+            for offset in range(count)
+        ]
+        return self._maybe_short_response(values, device_id)
+
+    async def write_coil(self, address: int, value: bool, device_id: int) -> None:
+        """Write a fake coil value."""
+        self.calls.append(("write_coil", address, value, device_id))
+        self._check_device(device_id)
+        self.coils[(device_id, address)] = bool(value)
+        self.writes.append(("write_coil", address, value, device_id))
+
+    async def read_discrete_inputs(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[bool]:
+        """Read fake discrete input values."""
+        self.calls.append(("read_discrete_inputs", address, count, device_id))
+        self._check_device(device_id)
+        values = [
+            self.discrete_inputs.get((device_id, address + offset), False)
+            for offset in range(count)
+        ]
+        return self._maybe_short_response(values, device_id)
+
+    async def read_holding_registers(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[int]:
+        """Read fake holding register values."""
+        self.calls.append(("read_holding_registers", address, count, device_id))
+        self._check_device(device_id)
+        values = [
+            self.holding_registers.get((device_id, address + offset), 0)
+            for offset in range(count)
+        ]
+        return self._maybe_short_response(values, device_id)
+
+    async def write_register(self, address: int, value: int, device_id: int) -> None:
+        """Write a fake holding register value."""
+        _validate_register_value(value)
+        self.calls.append(("write_register", address, value, device_id))
+        self._check_device(device_id)
+        self.holding_registers[(device_id, address)] = value
+        self.writes.append(("write_register", address, value, device_id))
+
+    def _check_device(self, device_id: int) -> None:
+        if device_id in self.unavailable_devices:
+            raise WBMR6CModbusConnectionError(
+                f"Fake Modbus device {device_id} is unavailable"
+            )
+        if device_id in self.response_error_devices:
+            raise WBMR6CModbusResponseError(
+                f"Fake Modbus device {device_id} returned an error"
+            )
+
+    def _maybe_short_response(
+        self, values: list[bool] | list[int], device_id: int
+    ) -> Sequence[bool] | Sequence[int]:
+        if device_id in self.short_response_devices:
+            return values[:-1]
+        return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +523,8 @@ class WBMR6CModbus:
         values = await self.transport.read_discrete_inputs(
             DISCRETE_INPUT_STATE_BASE, 8, self.device_id
         )
+        if len(values) < 8:
+            raise WBMR6CModbusResponseError("Not enough input values returned")
         return {
             input_number: bool(values[_input_index(input_number)])
             for input_number in INPUTS
@@ -588,6 +786,8 @@ class WBMR6CModbus:
         values = await self.transport.read_holding_registers(
             base_address, 8, self.device_id
         )
+        if len(values) < 8:
+            raise WBMR6CModbusResponseError("Not enough input register values returned")
         return {
             input_number: int(values[_input_index(input_number)])
             for input_number in INPUTS
