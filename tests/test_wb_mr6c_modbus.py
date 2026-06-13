@@ -179,7 +179,7 @@ class ManifestTest(unittest.TestCase):
         manifest_path = MODULE_PATH.parent / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
 
-        self.assertEqual(manifest["version"], "0.2.0")
+        self.assertEqual(manifest["version"], "0.3.0")
 
 
 class AddressingTest(unittest.TestCase):

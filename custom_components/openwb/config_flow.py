@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 import voluptuous as vol
@@ -11,18 +12,40 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
-    CONF_DEVICE_ID,
-    DEFAULT_DEVICE_ID,
+    CONFIG_ENTRY_VERSION,
+    CONF_BAUDRATE,
+    CONF_PARITY,
+    CONF_SERIAL_PORT,
+    CONF_STOPBITS,
+    DEFAULT_BAUDRATE,
+    DEFAULT_PARITY,
+    DEFAULT_STOPBITS,
     DOMAIN,
+    PARITY_VALUES,
+    STOPBITS_VALUES,
 )
+from .wb_mr6c_modbus import PymodbusSerialTransport, WBMR6CModbusConnectionError
 
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_DEVICE_ID, default=str(DEFAULT_DEVICE_ID)): (
+        vol.Required(CONF_SERIAL_PORT): selector.TextSelector(),
+        vol.Required(CONF_BAUDRATE, default=str(DEFAULT_BAUDRATE)): (
             selector.TextSelector(
                 {
                     "type": selector.TextSelectorType.NUMBER,
+                }
+            )
+        ),
+        vol.Required(CONF_PARITY, default=DEFAULT_PARITY): selector.SelectSelector(
+            {
+                "options": list(PARITY_VALUES),
+            }
+        ),
+        vol.Required(CONF_STOPBITS, default=str(DEFAULT_STOPBITS)): (
+            selector.SelectSelector(
+                {
+                    "options": [str(value) for value in STOPBITS_VALUES],
                 }
             )
         ),
@@ -33,7 +56,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for openWB."""
 
-    VERSION = 1
+    VERSION = CONFIG_ENTRY_VERSION
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -42,19 +65,20 @@ class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            device_id = _parse_device_id(user_input.get(CONF_DEVICE_ID))
+            data, errors = _validate_bus_config(user_input)
 
-            if device_id is None:
-                errors[CONF_DEVICE_ID] = "invalid_device_id"
-            else:
-                data = {CONF_DEVICE_ID: device_id}
+            if not errors:
+                serial_port = data[CONF_SERIAL_PORT]
 
-                await self.async_set_unique_id(f"wb_mr6c:{device_id}")
-                self._abort_if_unique_id_configured(updates=data)
+                await self.async_set_unique_id(f"wb_mr6c_bus:{serial_port}")
+                self._abort_if_unique_id_configured()
 
-                return self.async_create_entry(
-                    title=f"WB-MR6C {device_id}", data=data
-                )
+                if not await _async_can_open_serial_bus(data):
+                    errors["base"] = "cannot_connect"
+                else:
+                    return self.async_create_entry(
+                        title=f"openWB bus {serial_port}", data=data
+                    )
 
         return self.async_show_form(
             step_id="user",
@@ -63,13 +87,109 @@ class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-def _parse_device_id(value: Any) -> int | None:
-    """Parse and validate a Modbus device address."""
+def _validate_bus_config(
+    user_input: dict[str, Any],
+) -> tuple[dict[str, str | int], dict[str, str]]:
+    """Validate and normalize serial bus configuration input."""
+    errors: dict[str, str] = {}
+
+    serial_port = _parse_serial_port(user_input.get(CONF_SERIAL_PORT))
+    if serial_port is None:
+        errors[CONF_SERIAL_PORT] = "invalid_serial_port"
+
+    baudrate = _parse_positive_int(user_input.get(CONF_BAUDRATE, DEFAULT_BAUDRATE))
+    if baudrate is None:
+        errors[CONF_BAUDRATE] = "invalid_baudrate"
+
+    parity = _parse_parity(user_input.get(CONF_PARITY, DEFAULT_PARITY))
+    if parity is None:
+        errors[CONF_PARITY] = "invalid_parity"
+
+    stopbits = _parse_stopbits(user_input.get(CONF_STOPBITS, DEFAULT_STOPBITS))
+    if stopbits is None:
+        errors[CONF_STOPBITS] = "invalid_stopbits"
+
+    if errors:
+        return {}, errors
+
+    assert serial_port is not None
+    assert baudrate is not None
+    assert parity is not None
+    assert stopbits is not None
+    return {
+        CONF_SERIAL_PORT: serial_port,
+        CONF_BAUDRATE: baudrate,
+        CONF_PARITY: parity,
+        CONF_STOPBITS: stopbits,
+    }, {}
+
+
+async def _async_can_open_serial_bus(data: dict[str, str | int]) -> bool:
+    """Return whether the configured serial bus can be opened."""
     try:
-        device_id = int(value)
-    except (TypeError, ValueError):
+        transport = PymodbusSerialTransport(
+            str(data[CONF_SERIAL_PORT]),
+            baudrate=int(data[CONF_BAUDRATE]),
+            parity=str(data[CONF_PARITY]),
+            stopbits=int(data[CONF_STOPBITS]),
+        )
+        try:
+            await transport.connect()
+        except WBMR6CModbusConnectionError:
+            with suppress(WBMR6CModbusConnectionError):
+                await transport.close()
+            return False
+
+        await transport.close()
+    except WBMR6CModbusConnectionError:
+        return False
+
+    return True
+
+
+def _parse_serial_port(value: Any) -> str | None:
+    """Parse and validate a serial device path/name."""
+    if not isinstance(value, str):
         return None
 
-    if 1 <= device_id <= 247:
-        return device_id
+    serial_port = value.strip()
+    return serial_port or None
+
+
+def _parse_positive_int(value: Any) -> int | None:
+    """Parse and validate a positive integer form value."""
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        parsed_value = value
+    elif isinstance(value, str):
+        try:
+            parsed_value = int(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if parsed_value > 0:
+        return parsed_value
+    return None
+
+
+def _parse_parity(value: Any) -> str | None:
+    """Parse and validate serial parity."""
+    if not isinstance(value, str):
+        return None
+
+    parity = value.strip().upper()
+    if parity in PARITY_VALUES:
+        return parity
+    return None
+
+
+def _parse_stopbits(value: Any) -> int | None:
+    """Parse and validate serial stop bits."""
+    stopbits = _parse_positive_int(value)
+    if stopbits in STOPBITS_VALUES:
+        return stopbits
     return None

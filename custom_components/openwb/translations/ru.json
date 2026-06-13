@@ -3,17 +3,24 @@
     "step": {
       "user": {
         "title": "Настройка openWB",
-        "description": "Подключите Home Assistant к устройству openWB.",
+        "description": "Подключите Home Assistant к последовательной шине RS-485 для устройств openWB.",
         "data": {
-          "device_id": "Modbus-адрес устройства"
+          "serial_port": "Последовательный порт",
+          "baudrate": "Скорость передачи",
+          "parity": "Четность",
+          "stopbits": "Стоп-биты"
         }
       }
     },
     "error": {
-      "invalid_device_id": "Modbus-адрес устройства должен быть числом от 1 до 247."
+      "invalid_serial_port": "Последовательный порт не должен быть пустым.",
+      "invalid_baudrate": "Скорость передачи должна быть положительным целым числом.",
+      "invalid_parity": "Четность должна быть N, E или O.",
+      "invalid_stopbits": "Стоп-биты должны быть 1 или 2.",
+      "cannot_connect": "Не удалось открыть последовательный порт. Проверьте путь, права доступа и что другая программа Modbus не использует эту шину RS-485."
     },
     "abort": {
-      "already_configured": "Это устройство openWB уже настроено."
+      "already_configured": "Эта последовательная шина openWB уже настроена."
     }
   }
 }

@@ -3,17 +3,24 @@
     "step": {
       "user": {
         "title": "Set up openWB",
-        "description": "Connect Home Assistant to an openWB device.",
+        "description": "Connect Home Assistant to an RS-485 serial bus for openWB devices.",
         "data": {
-          "device_id": "Modbus device address"
+          "serial_port": "Serial port",
+          "baudrate": "Baud rate",
+          "parity": "Parity",
+          "stopbits": "Stop bits"
         }
       }
     },
     "error": {
-      "invalid_device_id": "Modbus device address must be a number from 1 to 247."
+      "invalid_serial_port": "Serial port must not be empty.",
+      "invalid_baudrate": "Baud rate must be a positive integer.",
+      "invalid_parity": "Parity must be N, E, or O.",
+      "invalid_stopbits": "Stop bits must be 1 or 2.",
+      "cannot_connect": "Unable to open the serial port. Check the path, permissions, and that no other Modbus master is using this RS-485 bus."
     },
     "abort": {
-      "already_configured": "This openWB device is already configured."
+      "already_configured": "This openWB serial bus is already configured."
     }
   }
 }
