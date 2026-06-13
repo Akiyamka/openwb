@@ -33,3 +33,7 @@ config/
 After copying the integration, use the step-by-step testing guide:
 
 - [Testing after custom_components installation](docs/testing.md)
+
+Backend architecture:
+
+- [Backend design](docs/backend-design.md)
