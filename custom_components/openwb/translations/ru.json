@@ -5,14 +5,12 @@
         "title": "Настройка openWB",
         "description": "Подключите Home Assistant к устройству openWB.",
         "data": {
-          "host": "Хост",
-          "port": "Порт",
           "device_id": "Modbus-адрес устройства"
         }
       }
     },
     "error": {
-      "host_required": "Укажите хост."
+      "invalid_device_id": "Modbus-адрес устройства должен быть числом от 1 до 247."
     },
     "abort": {
       "already_configured": "Это устройство openWB уже настроено."

@@ -5,14 +5,12 @@
         "title": "Set up openWB",
         "description": "Connect Home Assistant to an openWB device.",
         "data": {
-          "host": "Host",
-          "port": "Port",
-          "device_id": "Modbus device ID"
+          "device_id": "Modbus device address"
         }
       }
     },
     "error": {
-      "host_required": "Host is required."
+      "invalid_device_id": "Modbus device address must be a number from 1 to 247."
     },
     "abort": {
       "already_configured": "This openWB device is already configured."

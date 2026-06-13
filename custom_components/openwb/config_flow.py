@@ -8,25 +8,23 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_DEVICE_ID,
-    CONF_HOST,
-    CONF_PORT,
     DEFAULT_DEVICE_ID,
-    DEFAULT_PORT,
     DOMAIN,
 )
 
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_HOST): str,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=65535)
-        ),
-        vol.Optional(CONF_DEVICE_ID, default=DEFAULT_DEVICE_ID): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=247)
+        vol.Required(CONF_DEVICE_ID, default=str(DEFAULT_DEVICE_ID)): (
+            selector.TextSelector(
+                {
+                    "type": selector.TextSelectorType.NUMBER,
+                }
+            )
         ),
     }
 )
@@ -44,31 +42,34 @@ class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            host = user_input[CONF_HOST].strip()
+            device_id = _parse_device_id(user_input.get(CONF_DEVICE_ID))
 
-            if not host:
-                errors["base"] = "host_required"
+            if device_id is None:
+                errors[CONF_DEVICE_ID] = "invalid_device_id"
             else:
-                data = {
-                    CONF_HOST: host,
-                    CONF_PORT: user_input.get(CONF_PORT, DEFAULT_PORT),
-                    CONF_DEVICE_ID: user_input.get(
-                        CONF_DEVICE_ID, DEFAULT_DEVICE_ID
-                    ),
-                }
+                data = {CONF_DEVICE_ID: device_id}
 
-                await self.async_set_unique_id(
-                    (
-                        f"{data[CONF_HOST].lower()}:"
-                        f"{data[CONF_PORT]}:{data[CONF_DEVICE_ID]}"
-                    )
-                )
+                await self.async_set_unique_id(f"wb_mr6c:{device_id}")
                 self._abort_if_unique_id_configured(updates=data)
 
-                return self.async_create_entry(title=data[CONF_HOST], data=data)
+                return self.async_create_entry(
+                    title=f"WB-MR6C {device_id}", data=data
+                )
 
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
         )
+
+
+def _parse_device_id(value: Any) -> int | None:
+    """Parse and validate a Modbus device address."""
+    try:
+        device_id = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    if 1 <= device_id <= 247:
+        return device_id
+    return None

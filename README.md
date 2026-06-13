@@ -1,4 +1,4 @@
-# openWB for Home Assistant
+# OpenWB for Home Assistant
 
 Open Source Home Assistant integration with wirenboard modules in HACS format.
 
@@ -29,3 +29,7 @@ config/
   custom_components/
     openwb/
 ```
+
+After copying the integration, use the step-by-step testing guide:
+
+- [Testing after custom_components installation](docs/testing.md)
