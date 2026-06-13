@@ -23,6 +23,11 @@ class ConfigEntryNotReady(Exception):
     """Stub Home Assistant setup retry exception."""
 
 
+def callback(func: Any) -> Any:
+    """Stub Home Assistant callback decorator."""
+    return func
+
+
 class StubConfigFlow:
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__()
@@ -60,11 +65,75 @@ class StubConfigFlow:
         }
 
 
+class StubConfigSubentryFlow:
+    def __init__(self) -> None:
+        self.context = {"source": "user"}
+        self._entry: StubConfigEntry | None = None
+
+    @property
+    def source(self) -> str:
+        return self.context["source"]
+
+    def _get_entry(self) -> StubConfigEntry:
+        assert self._entry is not None
+        return self._entry
+
+    def async_create_entry(
+        self,
+        *,
+        title: str | None = None,
+        data: dict[str, Any],
+        unique_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "type": "create_entry",
+            "title": title,
+            "data": data,
+            "unique_id": unique_id,
+        }
+
+    def async_show_form(
+        self,
+        *,
+        step_id: str,
+        data_schema: object,
+        errors: dict[str, str],
+    ) -> dict[str, Any]:
+        return {
+            "type": "form",
+            "step_id": step_id,
+            "data_schema": data_schema,
+            "errors": errors,
+        }
+
+
+class StubConfigSubentry:
+    def __init__(
+        self,
+        *,
+        data: dict[str, Any],
+        unique_id: str | None = None,
+        subentry_type: str = "device",
+        title: str = "Device",
+    ) -> None:
+        self.data = data
+        self.unique_id = unique_id
+        self.subentry_type = subentry_type
+        self.title = title
+
+
 class StubConfigEntry:
-    def __init__(self, data: dict[str, Any], *, version: int = 2) -> None:
+    def __init__(
+        self,
+        data: dict[str, Any],
+        *,
+        version: int = 2,
+        subentries: dict[str, StubConfigSubentry] | None = None,
+    ) -> None:
         self.data = data
         self.entry_id = "bus-entry"
         self.version = version
+        self.subentries = subentries or {}
 
     def __class_getitem__(cls, item: object) -> type[StubConfigEntry]:
         return cls
@@ -101,8 +170,10 @@ def _install_homeassistant_stubs() -> None:
     config_entries = types.ModuleType("homeassistant.config_entries")
     config_entries.ConfigEntry = StubConfigEntry
     config_entries.ConfigFlow = StubConfigFlow
+    config_entries.ConfigSubentryFlow = StubConfigSubentryFlow
 
     core = types.ModuleType("homeassistant.core")
+    core.callback = callback
     core.HomeAssistant = type("HomeAssistant", (), {})
 
     data_entry_flow = types.ModuleType("homeassistant.data_entry_flow")
@@ -167,6 +238,7 @@ _STUBBED_MODULE_NAMES = (
     "custom_components.openwb",
     "custom_components.openwb.config_flow",
     "custom_components.openwb.const",
+    "custom_components.openwb.wb_mr6c_modbus",
 )
 _MISSING = object()
 _ORIGINAL_MODULES = {
@@ -191,6 +263,7 @@ _install_homeassistant_stubs()
 integration = importlib.import_module("custom_components.openwb")
 config_flow = importlib.import_module("custom_components.openwb.config_flow")
 const = importlib.import_module("custom_components.openwb.const")
+modbus = importlib.import_module("custom_components.openwb.wb_mr6c_modbus")
 
 
 class FakeSerialTransport:
@@ -220,6 +293,122 @@ class FakeSerialTransport:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+
+class FakeDeviceTransport:
+    instances: list[FakeDeviceTransport] = []
+    connect_error: Exception | None = None
+    read_error: Exception | None = None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.args = args
+        self.kwargs = kwargs
+        self.holding_registers: dict[tuple[int, int], int] = {}
+        self.calls: list[tuple[str, int, int, int]] = []
+        self.connect_calls = 0
+        self.close_calls = 0
+        self.connect_error = FakeDeviceTransport.connect_error
+        self.read_error = FakeDeviceTransport.read_error
+        FakeDeviceTransport.instances.append(self)
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        if self.connect_error is not None:
+            raise self.connect_error
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+    async def read_holding_registers(
+        self, address: int, count: int, device_id: int
+    ) -> list[int]:
+        self.calls.append(("read_holding_registers", address, count, device_id))
+        if self.read_error is not None:
+            raise self.read_error
+        return [
+            self.holding_registers.get((device_id, address + offset), 0)
+            for offset in range(count)
+        ]
+
+    async def read_coils(
+        self, address: int, count: int, device_id: int
+    ) -> list[bool]:
+        raise NotImplementedError
+
+    async def write_coil(self, address: int, value: bool, device_id: int) -> None:
+        raise NotImplementedError
+
+    async def read_discrete_inputs(
+        self, address: int, count: int, device_id: int
+    ) -> list[bool]:
+        raise NotImplementedError
+
+    async def write_register(self, address: int, value: int, device_id: int) -> None:
+        raise NotImplementedError
+
+
+def _set_device_identification(
+    transport: FakeDeviceTransport,
+    *,
+    device_id: int,
+    model: str = "WBMR6C",
+    firmware_version: str = "1.24.0",
+) -> None:
+    _set_ascii_registers(
+        transport,
+        device_id=device_id,
+        base_address=modbus.REG_MODEL_BASE,
+        length=modbus.REG_MODEL_LENGTH,
+        value=model,
+    )
+    _set_ascii_registers(
+        transport,
+        device_id=device_id,
+        base_address=modbus.REG_FIRMWARE_VERSION_BASE,
+        length=modbus.REG_FIRMWARE_VERSION_MAX_LENGTH,
+        value=firmware_version,
+    )
+
+
+def _set_ascii_registers(
+    transport: FakeDeviceTransport,
+    *,
+    device_id: int,
+    base_address: int,
+    length: int,
+    value: str,
+) -> None:
+    for offset in range(length):
+        register_value = ord(value[offset]) if offset < len(value) else 0
+        transport.holding_registers[(device_id, base_address + offset)] = (
+            register_value
+        )
+
+
+def _bus_entry(
+    *,
+    serial_port: str = "/dev/ttyUSB0",
+    transport: FakeDeviceTransport | None = None,
+    subentries: dict[str, StubConfigSubentry] | None = None,
+) -> StubConfigEntry:
+    entry = StubConfigEntry(
+        {
+            const.CONF_SERIAL_PORT: serial_port,
+            const.CONF_BAUDRATE: 9600,
+            const.CONF_PARITY: "N",
+            const.CONF_STOPBITS: 2,
+        },
+        subentries=subentries,
+    )
+    if transport is not None:
+        entry.runtime_data = types.SimpleNamespace(transport=transport)
+    return entry
+
+
+def _device_flow(entry: StubConfigEntry) -> config_flow.OpenWBDeviceSubentryFlow:
+    flow = config_flow.OpenWBDeviceSubentryFlow()
+    flow._entry = entry
+    return flow
 
 
 class FakeConfigEntriesManager:
@@ -352,6 +541,155 @@ class BusConfigFlowTest(unittest.IsolatedAsyncioTestCase):
                 const.CONF_STOPBITS: "invalid_stopbits",
             },
         )
+
+
+class DeviceSubentryFlowTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        FakeDeviceTransport.instances = []
+        FakeDeviceTransport.connect_error = None
+        FakeDeviceTransport.read_error = None
+
+    def test_bus_flow_reports_supported_device_subentry_type(self) -> None:
+        entry = _bus_entry()
+
+        supported_types = config_flow.OpenWBConfigFlow.async_get_supported_subentry_types(
+            entry
+        )
+
+        self.assertIs(
+            supported_types[const.SUBENTRY_TYPE_DEVICE],
+            config_flow.OpenWBDeviceSubentryFlow,
+        )
+
+    async def test_device_subentry_creates_entry_after_identification_read(
+        self,
+    ) -> None:
+        transport = FakeDeviceTransport()
+        _set_device_identification(transport, device_id=32)
+        flow = _device_flow(_bus_entry(transport=transport))
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(result["title"], "WB-MR6C 32")
+        self.assertEqual(result["unique_id"], "/dev/ttyUSB0:32")
+        self.assertEqual(
+            result["data"],
+            {
+                const.CONF_DEVICE_ID: 32,
+                const.CONF_MODEL: const.MODEL_WB_MR6C_V2,
+                const.CONF_FIRMWARE_VERSION: "1.24.0",
+            },
+        )
+        self.assertEqual(
+            transport.calls,
+            [
+                ("read_holding_registers", modbus.REG_MODEL_BASE, 6, 32),
+                (
+                    "read_holding_registers",
+                    modbus.REG_FIRMWARE_VERSION_BASE,
+                    16,
+                    32,
+                ),
+            ],
+        )
+
+    async def test_invalid_device_id_returns_form_error(self) -> None:
+        transport = FakeDeviceTransport()
+        flow = _device_flow(_bus_entry(transport=transport))
+
+        for invalid_device_id in ("0", "248", "not-a-number", True):
+            result = await flow.async_step_user(
+                {const.CONF_DEVICE_ID: invalid_device_id}
+            )
+            self.assertEqual(result["type"], "form")
+            self.assertEqual(
+                result["errors"], {const.CONF_DEVICE_ID: "invalid_device_id"}
+            )
+
+        self.assertEqual(transport.calls, [])
+
+    async def test_duplicate_device_id_on_same_bus_is_rejected_before_read(
+        self,
+    ) -> None:
+        transport = FakeDeviceTransport()
+        entry = _bus_entry(
+            transport=transport,
+            subentries={
+                "existing": StubConfigSubentry(
+                    data={const.CONF_DEVICE_ID: 32},
+                    unique_id="/dev/ttyUSB0:32",
+                )
+            },
+        )
+        flow = _device_flow(entry)
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(
+            result["errors"], {const.CONF_DEVICE_ID: "duplicate_device_id"}
+        )
+        self.assertEqual(transport.calls, [])
+
+    async def test_wrong_model_returns_form_error(self) -> None:
+        transport = FakeDeviceTransport()
+        _set_device_identification(transport, device_id=32, model="NOTMR6")
+        flow = _device_flow(_bus_entry(transport=transport))
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(result["errors"], {"base": "unexpected_model"})
+
+    async def test_transport_read_failure_returns_form_error(self) -> None:
+        transport = FakeDeviceTransport()
+        transport.read_error = config_flow.WBMR6CModbusConnectionError("boom")
+        flow = _device_flow(_bus_entry(transport=transport))
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+
+    async def test_transport_response_failure_returns_form_error(self) -> None:
+        transport = FakeDeviceTransport()
+        transport.read_error = config_flow.WBMR6CModbusResponseError("short")
+        flow = _device_flow(_bus_entry(transport=transport))
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(result["errors"], {"base": "cannot_validate_device"})
+
+    async def test_transport_connect_failure_returns_form_error(self) -> None:
+        original_transport = config_flow.PymodbusSerialTransport
+        config_flow.PymodbusSerialTransport = FakeDeviceTransport
+        FakeDeviceTransport.connect_error = config_flow.WBMR6CModbusConnectionError(
+            "boom"
+        )
+        flow = _device_flow(_bus_entry())
+
+        try:
+            result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+        finally:
+            config_flow.PymodbusSerialTransport = original_transport
+
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(result["errors"], {"base": "cannot_connect"})
+        self.assertEqual(FakeDeviceTransport.instances[0].connect_calls, 1)
+        self.assertEqual(FakeDeviceTransport.instances[0].close_calls, 1)
+
+    async def test_same_device_id_on_different_bus_is_allowed(self) -> None:
+        transport = FakeDeviceTransport()
+        _set_device_identification(transport, device_id=32)
+        entry = _bus_entry(serial_port="/dev/ttyUSB1", transport=transport)
+        flow = _device_flow(entry)
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(result["unique_id"], "/dev/ttyUSB1:32")
 
 
 class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):

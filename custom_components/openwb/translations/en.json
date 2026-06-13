@@ -22,5 +22,30 @@
     "abort": {
       "already_configured": "This openWB serial bus is already configured."
     }
+  },
+  "config_subentries": {
+    "device": {
+      "title": "WB-MR6C device",
+      "step": {
+        "user": {
+          "title": "Add WB-MR6C device",
+          "description": "Add one WB-MR6C module on this RS-485 bus.",
+          "data": {
+            "device_id": "Modbus device address"
+          }
+        }
+      },
+      "error": {
+        "invalid_device_id": "Device address must be an integer from 1 to 247.",
+        "duplicate_device_id": "This bus already has a device with this address.",
+        "invalid_bus_config": "The parent serial bus configuration is invalid. Remove and re-add the bus.",
+        "cannot_connect": "Unable to communicate with the device at this address.",
+        "cannot_validate_device": "The device returned an invalid model or firmware response.",
+        "unexpected_model": "The device at this address is not a WB-MR6C module."
+      },
+      "abort": {
+        "already_configured": "This device is already configured on this bus."
+      }
+    }
   }
 }
