@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up openWB",
+        "description": "Connect Home Assistant to an openWB device.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "device_id": "Modbus device ID"
+        }
+      }
+    },
+    "error": {
+      "host_required": "Host is required."
+    },
+    "abort": {
+      "already_configured": "This openWB device is already configured."
+    }
+  }
+}

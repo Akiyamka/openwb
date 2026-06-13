@@ -1,0 +1,12 @@
+{
+  "domain": "openwb",
+  "name": "openWB",
+  "codeowners": ["akiyamka@gmail.com"],
+  "config_flow": true,
+  "documentation": "https://github.com/Akiyamka/openwb#readme",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Akiyamka/openwb/issues",
+  "requirements": ["pymodbus==3.11.2"],
+  "version": "0.0.0"
+}
