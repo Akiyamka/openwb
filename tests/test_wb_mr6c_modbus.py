@@ -177,12 +177,20 @@ def _serial_transport_for_client(
     )
 
 
+def _complete_mapping_matrix(action: int = 0) -> dict[tuple[int, int], int]:
+    return {
+        (input_number, output): action
+        for input_number in wb_mr6c_modbus.INPUTS
+        for output in wb_mr6c_modbus.OUTPUTS
+    }
+
+
 class ManifestTest(unittest.TestCase):
     def test_manifest_version(self) -> None:
         manifest_path = MODULE_PATH.parent / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
 
-        self.assertEqual(manifest["version"], "0.8.0")
+        self.assertEqual(manifest["version"], "0.9.0")
 
 
 class AddressingTest(unittest.TestCase):
@@ -235,6 +243,20 @@ class AddressingTest(unittest.TestCase):
             wb_mr6c_modbus.activation_counter_register_address(0)
 
     def test_mapping_matrix_address(self) -> None:
+        for event in wb_mr6c_modbus.MappingEvent:
+            self.assertEqual(
+                wb_mr6c_modbus.mapping_register_address(event, 1, 1),
+                int(event),
+            )
+            self.assertEqual(
+                wb_mr6c_modbus.mapping_register_address(event, 6, 6),
+                int(event) + 5 * wb_mr6c_modbus.MAPPING_MATRIX_ROW_SPACING + 5,
+            )
+            self.assertEqual(
+                wb_mr6c_modbus.mapping_register_address(event, 0, 6),
+                int(event) + 7 * wb_mr6c_modbus.MAPPING_MATRIX_ROW_SPACING + 5,
+            )
+
         self.assertEqual(
             wb_mr6c_modbus.mapping_register_address(
                 wb_mr6c_modbus.MappingEvent.SHORT_PRESS, 1, 1
@@ -535,6 +557,170 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(transport.holding_registers[605], 3)
         self.assertIn(("write_register", 605, 3, 32), transport.calls)
+
+    async def test_set_mapping_action_validates_arguments(self) -> None:
+        transport = FakeTransport()
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_mapping_action(999, 1, 1, wb_mr6c_modbus.MappingAction.ON)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_mapping_action(
+                wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                7,
+                1,
+                wb_mr6c_modbus.MappingAction.ON,
+            )
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_mapping_action(
+                wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                1,
+                7,
+                wb_mr6c_modbus.MappingAction.ON,
+            )
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_mapping_action(
+                wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                1,
+                1,
+                4,
+            )
+
+        self.assertEqual(transport.calls, [])
+
+    async def test_read_mapping_action_rejects_invalid_device_value(self) -> None:
+        transport = FakeTransport()
+        transport.holding_registers[544] = 4
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await client.read_mapping_action(
+                wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                input_number=1,
+                output=1,
+            )
+
+    async def test_read_mapping_matrix_returns_all_documented_cells(self) -> None:
+        transport = FakeTransport()
+        for input_number in wb_mr6c_modbus.INPUTS:
+            for output in wb_mr6c_modbus.OUTPUTS:
+                action = (input_number + output) % 4
+                transport.holding_registers[
+                    wb_mr6c_modbus.mapping_register_address(
+                        wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                        input_number,
+                        output,
+                    )
+                ] = action
+
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+        matrix = await client.read_mapping_matrix(
+            wb_mr6c_modbus.MappingEvent.SHORT_PRESS
+        )
+
+        self.assertEqual(set(matrix), set(_complete_mapping_matrix()))
+        for input_number in wb_mr6c_modbus.INPUTS:
+            for output in wb_mr6c_modbus.OUTPUTS:
+                self.assertEqual(
+                    matrix[(input_number, output)],
+                    (input_number + output) % 4,
+                )
+        self.assertIn(("read_holding_registers", 544, 64, 32), transport.calls)
+
+    async def test_write_mapping_matrix_writes_only_changed_cells(self) -> None:
+        transport = FakeTransport()
+        current = _complete_mapping_matrix()
+        current[(1, 1)] = 1
+        current[(0, 6)] = 3
+        for (input_number, output), action in current.items():
+            transport.holding_registers[
+                wb_mr6c_modbus.mapping_register_address(
+                    wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                    input_number,
+                    output,
+                )
+            ] = action
+
+        desired = dict(current)
+        desired[(1, 1)] = 2
+        desired[(2, 3)] = 1
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        await client.write_mapping_matrix(
+            wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+            desired,
+        )
+
+        writes = [call for call in transport.calls if call[0] == "write_register"]
+        self.assertEqual(
+            writes,
+            [
+                ("write_register", 544, 2, 32),
+                ("write_register", 554, 1, 32),
+            ],
+        )
+
+    async def test_write_mapping_matrix_skips_unchanged_cells(self) -> None:
+        transport = FakeTransport()
+        desired = _complete_mapping_matrix()
+        for (input_number, output), action in desired.items():
+            transport.holding_registers[
+                wb_mr6c_modbus.mapping_register_address(
+                    wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                    input_number,
+                    output,
+                )
+            ] = action
+
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        await client.write_mapping_matrix(
+            wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+            desired,
+        )
+
+        writes = [call for call in transport.calls if call[0] == "write_register"]
+        self.assertEqual(writes, [])
+        self.assertEqual(
+            transport.calls,
+            [("read_holding_registers", 544, 64, 32)],
+        )
+
+    async def test_write_mapping_matrix_validates_before_modbus_calls(self) -> None:
+        transport = FakeTransport()
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.write_mapping_matrix(999, _complete_mapping_matrix())
+
+        desired = _complete_mapping_matrix()
+        desired[(1, 1)] = 4
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.write_mapping_matrix(
+                wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                desired,
+            )
+
+        desired = _complete_mapping_matrix()
+        desired[(7, 1)] = 0
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.write_mapping_matrix(
+                wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                desired,
+            )
+
+        desired = _complete_mapping_matrix()
+        del desired[(0, 6)]
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.write_mapping_matrix(
+                wb_mr6c_modbus.MappingEvent.SHORT_PRESS,
+                desired,
+            )
+
+        self.assertEqual(transport.calls, [])
 
     async def test_read_press_counters(self) -> None:
         transport = FakeTransport()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Protocol, Sequence
@@ -767,9 +767,15 @@ class WBMR6CModbus:
         self, event: MappingEvent | int, input_number: int, output: int
     ) -> int:
         """Read one mapping matrix cell."""
-        return await self.read_register(
-            mapping_register_address(event, input_number, output)
+        address = mapping_register_address(event, input_number, output)
+        values = await self.transport.read_holding_registers(
+            address, 1, self.device_id
         )
+        if not values:
+            raise WBMR6CModbusResponseError(
+                f"No value returned for register {address}"
+            )
+        return _mapping_action_response_value(values[0])
 
     async def set_mapping_action(
         self,
@@ -803,10 +809,31 @@ class WBMR6CModbus:
         for input_number in INPUTS:
             row = _input_index(input_number)
             for output in OUTPUTS:
-                matrix[(input_number, output)] = int(
+                matrix[(input_number, output)] = _mapping_action_response_value(
                     values[row * MAPPING_MATRIX_ROW_SPACING + output - 1]
                 )
         return matrix
+
+    async def write_mapping_matrix(
+        self,
+        event: MappingEvent | int,
+        desired_matrix: Mapping[tuple[int, int], MappingAction | int],
+    ) -> None:
+        """Apply a complete mapping matrix, writing only changed cells."""
+        mapping_event = _validate_mapping_event(event)
+        desired = _validate_mapping_matrix(desired_matrix)
+        current = await self.read_mapping_matrix(mapping_event)
+
+        for input_number in INPUTS:
+            for output in OUTPUTS:
+                key = (input_number, output)
+                action = desired[key]
+                if current[key] == action:
+                    continue
+                await self.write_register(
+                    mapping_register_address(mapping_event, input_number, output),
+                    action,
+                )
 
     async def _read_input_registers(self, base_address: int) -> dict[int, int]:
         values = await self.transport.read_holding_registers(
@@ -926,6 +953,52 @@ def mapping_register_address(
 def mapping_action_value(action: MappingAction | int) -> int:
     """Return a validated mapping action register value."""
     return int(_validate_mapping_action(action))
+
+
+def _validate_mapping_matrix(
+    matrix: Mapping[tuple[int, int], MappingAction | int],
+) -> dict[tuple[int, int], int]:
+    if not isinstance(matrix, Mapping):
+        raise InvalidWBMR6CValueError("Mapping matrix must be a mapping")
+
+    expected_keys = {
+        (input_number, output) for input_number in INPUTS for output in OUTPUTS
+    }
+    validated: dict[tuple[int, int], int] = {}
+    for key, action in matrix.items():
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise InvalidWBMR6CAddressError(
+                "Mapping matrix keys must be (input_number, output) tuples"
+            )
+
+        input_number, output = key
+        _input_index(input_number)
+        _validate_output(output)
+        validated[(input_number, output)] = mapping_action_value(action)
+
+    if set(validated) != expected_keys:
+        missing = expected_keys - set(validated)
+        extra = set(validated) - expected_keys
+        details = []
+        if missing:
+            details.append(f"missing cells: {sorted(missing)!r}")
+        if extra:
+            details.append(f"unexpected cells: {sorted(extra)!r}")
+        raise InvalidWBMR6CValueError(
+            "Mapping matrix must contain every input/output cell"
+            + (f" ({'; '.join(details)})" if details else "")
+        )
+
+    return validated
+
+
+def _mapping_action_response_value(value: Any) -> int:
+    try:
+        return mapping_action_value(value)
+    except InvalidWBMR6CValueError as err:
+        raise WBMR6CModbusResponseError(
+            f"Invalid mapping action returned by device: {value!r}"
+        ) from err
 
 
 def decode_model_registers(registers: Sequence[int]) -> str:
