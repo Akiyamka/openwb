@@ -493,6 +493,8 @@ class WBMR6CBasicSettings:
     communication_timeout_s: int
     input_modes: dict[int, int]
     debounce_ms: dict[int, int]
+    long_press_ms: dict[int, int]
+    second_press_wait_ms: dict[int, int]
     safe_states: dict[int, bool]
     safe_mode_actions: dict[int, int]
     safe_mode_input_controls: dict[int, int]
@@ -616,12 +618,12 @@ class WBMR6CModbus:
     async def read_basic_settings(self) -> WBMR6CBasicSettings:
         """Read core settings that are expected on the first UI settings screen."""
         return WBMR6CBasicSettings(
-            output_power_on_mode=await self.read_register(REG_OUTPUT_POWER_ON_MODE),
-            communication_timeout_s=await self.read_register(
-                REG_COMMUNICATION_TIMEOUT_S
-            ),
+            output_power_on_mode=await self.read_output_power_on_mode(),
+            communication_timeout_s=await self.read_communication_timeout_s(),
             input_modes=await self.read_input_modes(),
             debounce_ms=await self.read_debounce_ms(),
+            long_press_ms=await self.read_long_press_ms(),
+            second_press_wait_ms=await self.read_second_press_wait_ms(),
             safe_states=await self.read_safe_states(),
             safe_mode_actions=await self.read_safe_mode_actions(),
             safe_mode_input_controls=await self.read_safe_mode_input_controls(),
@@ -641,15 +643,38 @@ class WBMR6CModbus:
         _validate_register_value(value)
         await self.transport.write_register(address, value, self.device_id)
 
+    async def read_output_power_on_mode(self) -> int:
+        """Read the output behavior after device power-up."""
+        return await self.read_register(REG_OUTPUT_POWER_ON_MODE)
+
+    async def set_output_power_on_mode(
+        self, mode: OutputPowerOnMode | int
+    ) -> None:
+        """Set the output behavior after device power-up."""
+        await self.write_register(
+            REG_OUTPUT_POWER_ON_MODE,
+            int(_validate_output_power_on_mode(mode)),
+        )
+
+    async def read_communication_timeout_s(self) -> int:
+        """Read the communication-loss timeout in seconds."""
+        return await self.read_register(REG_COMMUNICATION_TIMEOUT_S)
+
+    async def set_communication_timeout_s(self, value: int) -> None:
+        """Set the communication-loss timeout in seconds."""
+        _validate_value_range(value, 1, 65534, "communication_timeout_s")
+        await self.write_register(REG_COMMUNICATION_TIMEOUT_S, value)
+
     async def read_input_modes(self) -> dict[int, int]:
         """Read input modes for inputs 1..6 and 0."""
         return await self._read_input_registers(REG_INPUT_MODE_BASE)
 
     async def set_input_mode(self, input_number: int, mode: InputMode | int) -> None:
         """Set mode for one input."""
+        validated_mode = _validate_input_mode_for_input(input_number, mode)
         await self.write_register(
             input_register_address(REG_INPUT_MODE_BASE, input_number),
-            int(_validate_input_mode(mode)),
+            int(validated_mode),
         )
 
     async def read_debounce_ms(self) -> dict[int, int]:
@@ -1122,6 +1147,41 @@ def _validate_input_mode(mode: InputMode | int) -> InputMode:
     except ValueError as err:
         raise InvalidWBMR6CValueError(
             f"Invalid WB-MR6C input mode {mode!r}"
+        ) from err
+
+
+def _validate_input_mode_for_input(
+    input_number: int,
+    mode: InputMode | int,
+) -> InputMode:
+    _input_index(input_number)
+    input_mode = _validate_input_mode(mode)
+    if input_mode is InputMode.DISABLED:
+        raise InvalidWBMR6CValueError(
+            f"Invalid WB-MR6C input mode {mode!r}; value 5 is unused"
+        )
+    if input_number == INPUT_0 and input_mode in {
+        InputMode.MOMENTARY,
+        InputMode.LATCHING,
+    }:
+        raise InvalidWBMR6CValueError(
+            f"Invalid WB-MR6C input 0 mode {mode!r}; expected 2, 3, 4, or 6"
+        )
+    return input_mode
+
+
+def _validate_output_power_on_mode(
+    mode: OutputPowerOnMode | int,
+) -> OutputPowerOnMode:
+    if not _is_int_value(mode):
+        raise InvalidWBMR6CValueError(
+            f"Invalid WB-MR6C output power-on mode {mode!r}"
+        )
+    try:
+        return OutputPowerOnMode(mode)
+    except ValueError as err:
+        raise InvalidWBMR6CValueError(
+            f"Invalid WB-MR6C output power-on mode {mode!r}"
         ) from err
 
 

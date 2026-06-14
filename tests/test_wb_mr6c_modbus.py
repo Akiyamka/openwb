@@ -31,6 +31,7 @@ class FakeTransport:
     async def read_coils(
         self, address: int, count: int, device_id: int
     ) -> list[bool]:
+        self.calls.append(("read_coils", address, count, device_id))
         return [self.coils.get(address + offset, False) for offset in range(count)]
 
     async def write_coil(self, address: int, value: bool, device_id: int) -> None:
@@ -40,6 +41,7 @@ class FakeTransport:
     async def read_discrete_inputs(
         self, address: int, count: int, device_id: int
     ) -> list[bool]:
+        self.calls.append(("read_discrete_inputs", address, count, device_id))
         return [
             self.discrete_inputs.get(address + offset, False)
             for offset in range(count)
@@ -48,6 +50,7 @@ class FakeTransport:
     async def read_holding_registers(
         self, address: int, count: int, device_id: int
     ) -> list[int]:
+        self.calls.append(("read_holding_registers", address, count, device_id))
         return [
             self.holding_registers.get(address + offset, 0)
             for offset in range(count)
@@ -179,7 +182,7 @@ class ManifestTest(unittest.TestCase):
         manifest_path = MODULE_PATH.parent / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
 
-        self.assertEqual(manifest["version"], "0.7.0")
+        self.assertEqual(manifest["version"], "0.8.0")
 
 
 class AddressingTest(unittest.TestCase):
@@ -584,7 +587,19 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
         client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
 
         with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_output_power_on_mode(3)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
             await client.set_input_mode(1, 99)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_input_mode(1, wb_mr6c_modbus.InputMode.DISABLED)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_input_mode(0, wb_mr6c_modbus.InputMode.MOMENTARY)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_input_mode(0, wb_mr6c_modbus.InputMode.LATCHING)
 
         with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
             await client.set_safe_state(1, 2)
@@ -595,6 +610,145 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
             await client.set_safe_mode_input_control(1, 3)
 
+    async def test_invalid_setting_ranges_raise_backend_value_error(self) -> None:
+        transport = FakeTransport()
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_communication_timeout_s(0)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_debounce_ms(1, 2001)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_long_press_ms(1, 499)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CValueError):
+            await client.set_second_press_wait_ms(1, 2001)
+
+        self.assertEqual(transport.calls, [])
+
+    async def test_invalid_setting_addresses_raise_backend_address_error(self) -> None:
+        transport = FakeTransport()
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_input_mode(7, wb_mr6c_modbus.InputMode.MOMENTARY)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_debounce_ms(7, 50)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_long_press_ms(7, 1000)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_second_press_wait_ms(7, 300)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_safe_state(7, wb_mr6c_modbus.SafeState.OFF)
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_safe_mode_action(
+                7,
+                wb_mr6c_modbus.SafeModeAction.KEEP_CURRENT_STATE,
+            )
+
+        with self.assertRaises(wb_mr6c_modbus.InvalidWBMR6CAddressError):
+            await client.set_safe_mode_input_control(
+                7,
+                wb_mr6c_modbus.SafeModeInputControl.DO_NOT_BLOCK,
+            )
+
+        self.assertEqual(transport.calls, [])
+
+    async def test_read_input_scoped_settings_include_input_zero(self) -> None:
+        transport = FakeTransport()
+        for input_number in wb_mr6c_modbus.INPUTS:
+            input_index = 7 if input_number == 0 else input_number - 1
+            transport.holding_registers[
+                wb_mr6c_modbus.REG_INPUT_MODE_BASE + input_index
+            ] = input_number + 10
+            transport.holding_registers[
+                wb_mr6c_modbus.REG_INPUT_DEBOUNCE_MS_BASE + input_index
+            ] = input_number + 20
+            transport.holding_registers[
+                wb_mr6c_modbus.REG_LONG_PRESS_MS_BASE + input_index
+            ] = input_number + 30
+            transport.holding_registers[
+                wb_mr6c_modbus.REG_SECOND_PRESS_WAIT_MS_BASE + input_index
+            ] = input_number + 40
+
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        input_modes = await client.read_input_modes()
+        debounce_ms = await client.read_debounce_ms()
+        long_press_ms = await client.read_long_press_ms()
+        second_press_wait_ms = await client.read_second_press_wait_ms()
+
+        self.assertEqual(set(input_modes), set(wb_mr6c_modbus.INPUTS))
+        self.assertEqual(input_modes[1], 11)
+        self.assertEqual(input_modes[6], 16)
+        self.assertEqual(input_modes[0], 10)
+        self.assertEqual(debounce_ms[0], 20)
+        self.assertEqual(long_press_ms[0], 30)
+        self.assertEqual(second_press_wait_ms[0], 40)
+        self.assertIn(("read_holding_registers", 9, 8, 32), transport.calls)
+        self.assertIn(("read_holding_registers", 20, 8, 32), transport.calls)
+        self.assertIn(("read_holding_registers", 1100, 8, 32), transport.calls)
+        self.assertIn(("read_holding_registers", 1140, 8, 32), transport.calls)
+
+    async def test_read_input_scoped_settings_reject_short_response(self) -> None:
+        transport = ShortHoldingRegisterTransport([0] * 7)
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await client.read_input_modes()
+
+    async def test_read_safe_mode_settings_reject_short_response(self) -> None:
+        transport = ShortHoldingRegisterTransport([0] * 5)
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await client.read_safe_states()
+
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await client.read_safe_mode_actions()
+
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await client.read_safe_mode_input_controls()
+
+    async def test_setting_setters_write_register_addresses_and_values(self) -> None:
+        transport = FakeTransport()
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        await client.set_output_power_on_mode(
+            wb_mr6c_modbus.OutputPowerOnMode.RESTORE_LAST_STATE
+        )
+        await client.set_communication_timeout_s(15)
+        await client.set_input_mode(0, wb_mr6c_modbus.InputMode.MAPPING_MATRIX_EDGE)
+        await client.set_debounce_ms(0, 75)
+        await client.set_long_press_ms(0, 1200)
+        await client.set_second_press_wait_ms(0, 350)
+        await client.set_safe_state(6, wb_mr6c_modbus.SafeState.ON)
+        await client.set_safe_mode_action(
+            3,
+            wb_mr6c_modbus.SafeModeAction.SET_SAFE_STATE,
+        )
+        await client.set_safe_mode_input_control(
+            6,
+            wb_mr6c_modbus.SafeModeInputControl.ALLOW_ONLY_IN_SAFE_MODE,
+        )
+
+        self.assertIn(("write_register", 6, 1, 32), transport.calls)
+        self.assertIn(("write_register", 8, 15, 32), transport.calls)
+        self.assertIn(("write_register", 16, 4, 32), transport.calls)
+        self.assertIn(("write_register", 27, 75, 32), transport.calls)
+        self.assertIn(("write_register", 1107, 1200, 32), transport.calls)
+        self.assertIn(("write_register", 1147, 350, 32), transport.calls)
+        self.assertIn(("write_register", 935, 1, 32), transport.calls)
+        self.assertIn(("write_register", 940, 1, 32), transport.calls)
+        self.assertIn(("write_register", 951, 2, 32), transport.calls)
+
     async def test_read_basic_settings(self) -> None:
         transport = FakeTransport()
         transport.holding_registers[6] = 1
@@ -603,6 +757,10 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
         transport.holding_registers[16] = 4
         transport.holding_registers[20] = 50
         transport.holding_registers[27] = 100
+        transport.holding_registers[1100] = 1000
+        transport.holding_registers[1107] = 1500
+        transport.holding_registers[1140] = 300
+        transport.holding_registers[1147] = 400
         transport.holding_registers[930] = 1
         transport.holding_registers[938] = 1
         transport.holding_registers[946] = 2
@@ -616,6 +774,10 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings.input_modes[0], 4)
         self.assertEqual(settings.debounce_ms[1], 50)
         self.assertEqual(settings.debounce_ms[0], 100)
+        self.assertEqual(settings.long_press_ms[1], 1000)
+        self.assertEqual(settings.long_press_ms[0], 1500)
+        self.assertEqual(settings.second_press_wait_ms[1], 300)
+        self.assertEqual(settings.second_press_wait_ms[0], 400)
         self.assertTrue(settings.safe_states[1])
         self.assertEqual(settings.safe_mode_actions[1], 1)
         self.assertEqual(settings.safe_mode_input_controls[1], 2)
