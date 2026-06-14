@@ -23,6 +23,10 @@ class ConfigEntryNotReady(Exception):
     """Stub Home Assistant setup retry exception."""
 
 
+class HomeAssistantError(Exception):
+    """Stub Home Assistant user-facing exception."""
+
+
 class UpdateFailed(Exception):
     """Stub Home Assistant coordinator update failure."""
 
@@ -48,6 +52,8 @@ class DataUpdateCoordinator:
         self.kwargs = kwargs
         self.data: Any = None
         self.async_config_entry_first_refresh_calls = 0
+        self.async_request_refresh_calls = 0
+        self.last_update_success = True
         self.listeners: list[Any] = []
 
     async def async_config_entry_first_refresh(self) -> None:
@@ -55,6 +61,7 @@ class DataUpdateCoordinator:
         self.data = await self._async_update_data()
 
     async def async_request_refresh(self) -> None:
+        self.async_request_refresh_calls += 1
         self.data = await self._async_update_data()
 
     def async_add_listener(self, update_callback: Any) -> Any:
@@ -64,6 +71,40 @@ class DataUpdateCoordinator:
             self.listeners.remove(update_callback)
 
         return remove_listener
+
+
+class CoordinatorEntity:
+    """Stub Home Assistant CoordinatorEntity."""
+
+    def __init__(self, coordinator: DataUpdateCoordinator) -> None:
+        self.coordinator = coordinator
+        self.async_write_ha_state_calls = 0
+
+    @property
+    def available(self) -> bool:
+        return bool(getattr(self.coordinator, "last_update_success", True))
+
+    def async_write_ha_state(self) -> None:
+        self.async_write_ha_state_calls += 1
+
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SwitchEntity:
+    """Stub Home Assistant SwitchEntity."""
+
+    @property
+    def unique_id(self) -> str | None:
+        return getattr(self, "_attr_unique_id", None)
+
+    @property
+    def name(self) -> str | None:
+        return getattr(self, "_attr_name", None)
+
+    @property
+    def device_info(self) -> dict[str, Any] | None:
+        return getattr(self, "_attr_device_info", None)
 
 
 def callback(func: Any) -> Any:
@@ -223,6 +264,11 @@ class TextSelectorType:
 
 def _install_homeassistant_stubs() -> None:
     homeassistant = types.ModuleType("homeassistant")
+    components = types.ModuleType("homeassistant.components")
+    switch_component = types.ModuleType("homeassistant.components.switch")
+    switch_component.SwitchEntity = SwitchEntity
+    components.switch = switch_component
+
     config_entries = types.ModuleType("homeassistant.config_entries")
     config_entries.ConfigEntry = StubConfigEntry
     config_entries.ConfigFlow = StubConfigFlow
@@ -238,6 +284,7 @@ def _install_homeassistant_stubs() -> None:
 
     exceptions = types.ModuleType("homeassistant.exceptions")
     exceptions.ConfigEntryNotReady = ConfigEntryNotReady
+    exceptions.HomeAssistantError = HomeAssistantError
 
     helpers = types.ModuleType("homeassistant.helpers")
     selector = types.ModuleType("homeassistant.helpers.selector")
@@ -247,6 +294,7 @@ def _install_homeassistant_stubs() -> None:
     selector.SelectSelector = SelectSelector
     helpers.selector = selector
     update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
+    update_coordinator.CoordinatorEntity = CoordinatorEntity
     update_coordinator.UpdateFailed = UpdateFailed
     helpers.update_coordinator = update_coordinator
 
@@ -255,12 +303,15 @@ def _install_homeassistant_stubs() -> None:
     voluptuous.Required = Required
 
     homeassistant.config_entries = config_entries
+    homeassistant.components = components
     homeassistant.core = core
     homeassistant.data_entry_flow = data_entry_flow
     homeassistant.exceptions = exceptions
     homeassistant.helpers = helpers
 
     sys.modules["homeassistant"] = homeassistant
+    sys.modules["homeassistant.components"] = components
+    sys.modules["homeassistant.components.switch"] = switch_component
     sys.modules["homeassistant.config_entries"] = config_entries
     sys.modules["homeassistant.core"] = core
     sys.modules["homeassistant.data_entry_flow"] = data_entry_flow
@@ -289,6 +340,8 @@ if _module_available("homeassistant.config_entries") or _module_available(
 
 _STUBBED_MODULE_NAMES = (
     "homeassistant",
+    "homeassistant.components",
+    "homeassistant.components.switch",
     "homeassistant.config_entries",
     "homeassistant.core",
     "homeassistant.data_entry_flow",
@@ -300,6 +353,7 @@ _STUBBED_MODULE_NAMES = (
     "custom_components.openwb",
     "custom_components.openwb.config_flow",
     "custom_components.openwb.const",
+    "custom_components.openwb.switch",
     "custom_components.openwb.wb_mr6c_modbus",
 )
 _MISSING = object()
@@ -326,6 +380,7 @@ integration = importlib.import_module("custom_components.openwb")
 config_flow = importlib.import_module("custom_components.openwb.config_flow")
 const = importlib.import_module("custom_components.openwb.const")
 modbus = importlib.import_module("custom_components.openwb.wb_mr6c_modbus")
+switch_platform = importlib.import_module("custom_components.openwb.switch")
 
 
 class FakeSerialTransport:
@@ -585,6 +640,9 @@ class FakeConfigEntriesManager:
     def __init__(self) -> None:
         self.updates: list[tuple[StubConfigEntry, dict[str, Any]]] = []
         self.reloads: list[str] = []
+        self.forwarded_entry_setups: list[tuple[StubConfigEntry, tuple[str, ...]]] = []
+        self.unloaded_platforms: list[tuple[StubConfigEntry, tuple[str, ...]]] = []
+        self.unload_platforms_result = True
 
     def async_update_entry(
         self, entry: StubConfigEntry, **kwargs: Any
@@ -595,6 +653,21 @@ class FakeConfigEntriesManager:
 
     async def async_reload(self, entry_id: str) -> None:
         self.reloads.append(entry_id)
+
+    async def async_forward_entry_setups(
+        self, entry: StubConfigEntry, platforms: tuple[str, ...]
+    ) -> None:
+        self.forwarded_entry_setups.append((entry, tuple(platforms)))
+
+    async def async_unload_platforms(
+        self, entry: StubConfigEntry, platforms: tuple[str, ...]
+    ) -> bool:
+        self.unloaded_platforms.append((entry, tuple(platforms)))
+        return self.unload_platforms_result
+
+
+def _hass() -> types.SimpleNamespace:
+    return types.SimpleNamespace(config_entries=FakeConfigEntriesManager())
 
 
 class BusConfigFlowTest(unittest.IsolatedAsyncioTestCase):
@@ -889,10 +962,9 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
                 const.CONF_STOPBITS: 1,
             }
         )
+        hass = _hass()
 
-        self.assertTrue(
-            await integration.async_setup_entry(types.SimpleNamespace(), entry)
-        )
+        self.assertTrue(await integration.async_setup_entry(hass, entry))
 
         transport = FakeSerialTransport.instances[0]
         self.assertEqual(transport.port, "/dev/ttyUSB0")
@@ -913,6 +985,10 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(entry.update_listeners, [integration._async_reload_entry])
         self.assertEqual(len(entry.unload_callbacks), 1)
+        self.assertEqual(
+            hass.config_entries.forwarded_entry_setups,
+            [(entry, ("switch",))],
+        )
 
     async def test_setup_creates_shared_transport_and_clients_per_subentry(
         self,
@@ -931,7 +1007,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(
-            await integration.async_setup_entry(types.SimpleNamespace(), entry)
+            await integration.async_setup_entry(_hass(), entry)
         )
 
         transport = FakeSerialTransport.instances[0]
@@ -977,7 +1053,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             subentries={"device-32": _device_subentry(32, firmware_version="1.16.9")},
         )
 
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        await integration.async_setup_entry(_hass(), entry)
 
         metadata = entry.runtime_data.device_metadata[32]
         self.assertEqual(metadata.model, "WBMR6C")
@@ -1000,7 +1076,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
                 "device-33": _device_subentry(33),
             },
         )
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        await integration.async_setup_entry(_hass(), entry)
         transport = FakeSerialTransport.instances[0]
         transport.calls.clear()
         transport.unavailable_devices.add(33)
@@ -1032,7 +1108,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
                 "device-33": _device_subentry(33),
             },
         )
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        await integration.async_setup_entry(_hass(), entry)
         transport = FakeSerialTransport.instances[0]
         transport.calls.clear()
         transport.unavailable_devices.update({32, 33})
@@ -1056,7 +1132,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(UpdateFailed):
-            await integration.async_setup_entry(types.SimpleNamespace(), entry)
+            await integration.async_setup_entry(_hass(), entry)
 
         transport = FakeSerialTransport.instances[0]
         self.assertEqual(transport.close_calls, 1)
@@ -1072,7 +1148,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
                 const.CONF_STOPBITS: 2,
             }
         )
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        await integration.async_setup_entry(_hass(), entry)
         config_entries_manager = FakeConfigEntriesManager()
         hass = types.SimpleNamespace(config_entries=config_entries_manager)
 
@@ -1091,7 +1167,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             subentries={"device-32": _device_subentry(32, firmware_version="1.16.9")},
         )
 
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        await integration.async_setup_entry(_hass(), entry)
 
         state = entry.runtime_data.coordinator.data[32]
         self.assertEqual(state.press_counts, {})
@@ -1112,7 +1188,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             },
             subentries={"device-32": _device_subentry(32, firmware_version="1.23.9")},
         )
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        await integration.async_setup_entry(_hass(), entry)
         transport = FakeSerialTransport.instances[0]
         transport.calls.clear()
         transport.set_coil(modbus.COIL_RELAY_COMMAND_BASE, True, device_id=32)
@@ -1144,7 +1220,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             },
             subentries={"device-32": _device_subentry(32, firmware_version="1.24.0")},
         )
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        await integration.async_setup_entry(_hass(), entry)
         transport = FakeSerialTransport.instances[0]
         transport.calls.clear()
         transport.set_coil(modbus.COIL_RELAY_COMMAND_BASE, False, device_id=32)
@@ -1175,7 +1251,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertLogs(integration.__name__, level="ERROR"):
             self.assertFalse(
-                await integration.async_setup_entry(types.SimpleNamespace(), entry)
+                await integration.async_setup_entry(_hass(), entry)
             )
         self.assertEqual(FakeSerialTransport.instances, [])
 
@@ -1193,7 +1269,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(ConfigEntryNotReady):
-            await integration.async_setup_entry(types.SimpleNamespace(), entry)
+            await integration.async_setup_entry(_hass(), entry)
 
     async def test_unload_closes_transport(self) -> None:
         entry = StubConfigEntry(
@@ -1204,16 +1280,272 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
                 const.CONF_STOPBITS: 2,
             }
         )
-        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        hass = _hass()
+        await integration.async_setup_entry(hass, entry)
         coordinator = entry.runtime_data.coordinator
         self.assertEqual(coordinator.listeners, [integration._noop_coordinator_listener])
 
-        self.assertTrue(
-            await integration.async_unload_entry(types.SimpleNamespace(), entry)
-        )
+        self.assertTrue(await integration.async_unload_entry(hass, entry))
 
         self.assertEqual(FakeSerialTransport.instances[0].close_calls, 1)
         self.assertEqual(coordinator.listeners, [])
+        self.assertEqual(
+            hass.config_entries.unloaded_platforms,
+            [(entry, ("switch",))],
+        )
+
+
+class FakeSwitchCoordinator:
+    def __init__(self, data: dict[int, integration.WBMR6CDeviceState]) -> None:
+        self.data = data
+        self.last_update_success = True
+        self.async_request_refresh_calls = 0
+
+    async def async_request_refresh(self) -> None:
+        self.async_request_refresh_calls += 1
+
+
+class FakeRelayClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self.error: Exception | None = None
+
+    async def turn_on(self, output: int) -> None:
+        await self._call("turn_on", output)
+
+    async def turn_off(self, output: int) -> None:
+        await self._call("turn_off", output)
+
+    async def toggle(self, output: int) -> None:
+        await self._call("toggle", output)
+
+    async def _call(self, method: str, output: int) -> None:
+        if self.error is not None:
+            raise self.error
+        self.calls.append((method, output))
+
+
+def _metadata(
+    *, model: str | None = "WBMR6C", firmware_version: str | None = "1.24.0"
+) -> integration.WBMR6CDeviceMetadata:
+    return integration.WBMR6CDeviceMetadata(
+        model=model,
+        firmware_version=firmware_version,
+        supports_press_counters=True,
+        supports_relay_state_discrete_inputs=True,
+    )
+
+
+def _device_state(
+    relay_states: dict[int, bool] | None = None,
+) -> integration.WBMR6CDeviceState:
+    return integration.WBMR6CDeviceState(
+        input_states={},
+        press_counts={},
+        relay_states=dict(relay_states or {}),
+        relay_commands={},
+    )
+
+
+def _switch_entry(
+    *,
+    serial_port: str = "/dev/ttyUSB0",
+    device_id: int = 32,
+    relay_states: dict[int, bool] | None = None,
+) -> tuple[StubConfigEntry, FakeRelayClient, FakeSwitchCoordinator]:
+    entry = _bus_entry(
+        serial_port=serial_port,
+        subentries={"device-32": _device_subentry(device_id)},
+    )
+    client = FakeRelayClient()
+    coordinator = FakeSwitchCoordinator({device_id: _device_state(relay_states)})
+    entry.runtime_data = types.SimpleNamespace(
+        coordinator=coordinator,
+        clients={device_id: client},
+        device_metadata={device_id: _metadata()},
+    )
+    return entry, client, coordinator
+
+
+def _relay_switch(
+    *,
+    serial_port: str = "/dev/ttyUSB0",
+    device_id: int = 32,
+    output: int = 1,
+    relay_states: dict[int, bool] | None = None,
+) -> tuple[
+    switch_platform.OpenWBRelaySwitch,
+    FakeRelayClient,
+    FakeSwitchCoordinator,
+]:
+    entry, client, coordinator = _switch_entry(
+        serial_port=serial_port,
+        device_id=device_id,
+        relay_states=relay_states,
+    )
+    entity = switch_platform.OpenWBRelaySwitch(
+        entry=entry,
+        client=client,
+        serial_port=serial_port,
+        device_id=device_id,
+        output=output,
+        metadata=_metadata(),
+    )
+    return entity, client, coordinator
+
+
+class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
+    async def test_setup_creates_six_relay_switches_per_device_subentry(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(32),
+                "subentry-33": _device_subentry(33),
+            }
+        )
+        clients = {32: FakeRelayClient(), 33: FakeRelayClient()}
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state({output: False for output in modbus.OUTPUTS}),
+                    33: _device_state({output: False for output in modbus.OUTPUTS}),
+                }
+            ),
+            clients=clients,
+            device_metadata={32: _metadata(), 33: _metadata()},
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await switch_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(len(add_calls), 2)
+        self.assertEqual([len(entities) for entities, _ in add_calls], [6, 6])
+        self.assertEqual(
+            [kwargs["config_subentry_id"] for _, kwargs in add_calls],
+            ["subentry-32", "subentry-33"],
+        )
+        unique_ids = [
+            entity.unique_id for entities, _ in add_calls for entity in entities
+        ]
+        self.assertIn("/dev/ttyUSB0:32:relay_1", unique_ids)
+        self.assertIn("/dev/ttyUSB0:33:relay_6", unique_ids)
+        self.assertEqual(len(set(unique_ids)), 12)
+        self.assertEqual(
+            add_calls[0][0][0].device_info,
+            {
+                "identifiers": {(const.DOMAIN, "/dev/ttyUSB0:32")},
+                "manufacturer": "Wiren Board",
+                "model": "WBMR6C",
+                "name": "WB-MR6C 32",
+                "sw_version": "1.24.0",
+            },
+        )
+
+    async def test_is_on_reads_coordinator_data_without_client_io(self) -> None:
+        entity, client, _coordinator = _relay_switch(
+            output=2,
+            relay_states={2: True},
+        )
+
+        self.assertTrue(entity.is_on)
+        self.assertEqual(client.calls, [])
+
+    async def test_unavailable_when_device_or_output_missing_from_data(self) -> None:
+        entity, _client, coordinator = _relay_switch(
+            output=2,
+            relay_states={2: True},
+        )
+
+        self.assertTrue(entity.available)
+
+        coordinator.data = {}
+        self.assertFalse(entity.available)
+        self.assertIsNone(entity.is_on)
+
+        coordinator.data = {32: _device_state({1: True})}
+        self.assertFalse(entity.available)
+        self.assertIsNone(entity.is_on)
+
+    async def test_turn_on_and_off_call_backend_and_set_optimistic_state(self) -> None:
+        entity, client, coordinator = _relay_switch(
+            output=3,
+            relay_states={3: False},
+        )
+
+        await entity.async_turn_on()
+
+        self.assertEqual(client.calls, [("turn_on", 3)])
+        self.assertTrue(entity.is_on)
+        self.assertEqual(entity.async_write_ha_state_calls, 1)
+        self.assertEqual(coordinator.async_request_refresh_calls, 0)
+
+        await entity.async_turn_off()
+
+        self.assertEqual(client.calls, [("turn_on", 3), ("turn_off", 3)])
+        self.assertFalse(entity.is_on)
+        self.assertEqual(entity.async_write_ha_state_calls, 2)
+        self.assertEqual(coordinator.async_request_refresh_calls, 0)
+
+    async def test_toggle_calls_backend_and_sets_optimistic_inverse(self) -> None:
+        entity, client, coordinator = _relay_switch(
+            output=4,
+            relay_states={4: False},
+        )
+
+        await entity.async_toggle()
+
+        self.assertEqual(client.calls, [("toggle", 4)])
+        self.assertTrue(entity.is_on)
+        self.assertEqual(entity.async_write_ha_state_calls, 1)
+        self.assertEqual(coordinator.async_request_refresh_calls, 0)
+
+    async def test_coordinator_update_clears_optimistic_state(self) -> None:
+        entity, _client, coordinator = _relay_switch(
+            output=3,
+            relay_states={3: False},
+        )
+
+        await entity.async_turn_on()
+        coordinator.data = {32: _device_state({3: False})}
+        entity._handle_coordinator_update()
+
+        self.assertFalse(entity.is_on)
+
+    async def test_write_failure_raises_home_assistant_error(self) -> None:
+        entity, client, coordinator = _relay_switch(
+            output=3,
+            relay_states={3: False},
+        )
+        client.error = modbus.WBMR6CModbusConnectionError("boom")
+
+        with self.assertRaises(HomeAssistantError):
+            await entity.async_turn_on()
+
+        self.assertFalse(entity.is_on)
+        self.assertEqual(entity.async_write_ha_state_calls, 0)
+        self.assertEqual(coordinator.async_request_refresh_calls, 0)
+
+    async def test_unique_ids_include_bus_device_and_output(self) -> None:
+        first, _client, _coordinator = _relay_switch(
+            serial_port="/dev/ttyUSB0",
+            device_id=32,
+            output=1,
+            relay_states={1: False},
+        )
+        second, _client, _coordinator = _relay_switch(
+            serial_port="/dev/ttyUSB1",
+            device_id=32,
+            output=1,
+            relay_states={1: False},
+        )
+
+        self.assertEqual(first.unique_id, "/dev/ttyUSB0:32:relay_1")
+        self.assertEqual(second.unique_id, "/dev/ttyUSB1:32:relay_1")
+        self.assertNotEqual(first.unique_id, second.unique_id)
 
 
 class MigrationTest(unittest.IsolatedAsyncioTestCase):
@@ -1242,7 +1574,7 @@ class MigrationTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertLogs(integration.__name__, level="ERROR"):
             self.assertFalse(
-                await integration.async_migrate_entry(types.SimpleNamespace(), entry)
+                await integration.async_migrate_entry(_hass(), entry)
             )
         self.assertEqual(entry.version, 1)
 

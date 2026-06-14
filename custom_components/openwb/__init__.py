@@ -40,6 +40,7 @@ from .wb_mr6c_modbus import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+PLATFORMS: tuple[str, ...] = ("switch",)
 _BUS_UPDATE_INTERVAL = timedelta(seconds=1)
 _PRESS_COUNTER_EVENTS = (
     PressCounterEvent.SHORT,
@@ -211,6 +212,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenWBConfigEntry) -> bo
             remove_coordinator_listener=remove_coordinator_listener,
         )
         await coordinator.async_config_entry_first_refresh()
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         if remove_coordinator_listener is not None:
             remove_coordinator_listener()
@@ -224,6 +226,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenWBConfigEntry) -> bo
 
 async def async_unload_entry(hass: HomeAssistant, entry: OpenWBConfigEntry) -> bool:
     """Unload an openWB config entry."""
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+
     entry.runtime_data.remove_coordinator_listener()
     await entry.runtime_data.transport.close()
     return True
