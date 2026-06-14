@@ -31,6 +31,8 @@ from .const import (
     STOPBITS_VALUES,
 )
 from .wb_mr6c_modbus import (
+    MR6C_MODEL,
+    MR6CU_MODEL,
     PressCounterEvent,
     ModbusTransport,
     PymodbusSerialTransport,
@@ -523,9 +525,9 @@ def device_name(model: str | None, device_id: int) -> str:
 
 def _device_model_key(model: str | None) -> str | None:
     """Normalize raw Modbus model strings and stored config values."""
-    if model in {WBMR6CU_MODEL, MODEL_WB_MR6CU_V2}:
+    if model in {WBMR6CU_MODEL, MR6CU_MODEL, MODEL_WB_MR6CU_V2}:
         return MODEL_WB_MR6CU_V2
-    if model in {WBMR6C_MODEL, MODEL_WB_MR6C_V2}:
+    if model in {WBMR6C_MODEL, MR6C_MODEL, MODEL_WB_MR6C_V2}:
         return MODEL_WB_MR6C_V2
     return None
 

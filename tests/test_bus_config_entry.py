@@ -905,12 +905,12 @@ class DeviceSubentryFlowTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_device_subentry_accepts_wb_mr6cu(self) -> None:
+    async def test_device_subentry_accepts_mr6cu_model_alias(self) -> None:
         transport = FakeDeviceTransport()
         _set_device_identification(
             transport,
             device_id=32,
-            model=modbus.WBMR6CU_MODEL,
+            model=modbus.MR6CU_MODEL,
         )
         flow = _device_flow(_bus_entry(transport=transport))
 
@@ -1159,7 +1159,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
     async def test_wb_mr6cu_setup_skips_input_polling(self) -> None:
         _seed_serial_identification(
             device_id=32,
-            model=modbus.WBMR6CU_MODEL,
+            model=modbus.MR6CU_MODEL,
             firmware_version="1.24.0",
         )
         entry = StubConfigEntry(
@@ -1181,7 +1181,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         await integration.async_setup_entry(_hass(), entry)
 
         metadata = entry.runtime_data.device_metadata[32]
-        self.assertEqual(metadata.model, modbus.WBMR6CU_MODEL)
+        self.assertEqual(metadata.model, modbus.MR6CU_MODEL)
         self.assertFalse(metadata.supports_inputs)
         self.assertFalse(metadata.supports_press_counters)
         self.assertFalse(metadata.supports_mapping_matrix)
@@ -1804,7 +1804,7 @@ class BinarySensorPlatformTest(unittest.IsolatedAsyncioTestCase):
             device_metadata={
                 32: _metadata(),
                 33: _metadata(
-                    model=modbus.WBMR6CU_MODEL,
+                    model=modbus.MR6CU_MODEL,
                     supports_inputs=False,
                     supports_press_counters=False,
                     supports_mapping_matrix=False,
@@ -1942,7 +1942,7 @@ class EventPlatformTest(unittest.IsolatedAsyncioTestCase):
             device_metadata={
                 32: _metadata(supports_press_counters=True),
                 33: _metadata(
-                    model=modbus.WBMR6CU_MODEL,
+                    model=modbus.MR6CU_MODEL,
                     supports_inputs=False,
                     supports_press_counters=False,
                     supports_mapping_matrix=False,
@@ -2125,7 +2125,7 @@ class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
             clients={32: client},
             device_metadata={
                 32: _metadata(
-                    model=modbus.WBMR6CU_MODEL,
+                    model=modbus.MR6CU_MODEL,
                     supports_inputs=False,
                     supports_press_counters=False,
                     supports_mapping_matrix=False,

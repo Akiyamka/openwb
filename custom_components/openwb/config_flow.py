@@ -32,6 +32,8 @@ from .const import (
     SUBENTRY_TYPE_DEVICE,
 )
 from .wb_mr6c_modbus import (
+    MR6C_MODEL,
+    MR6CU_MODEL,
     ModbusTransport,
     PymodbusSerialTransport,
     SUPPORTED_MODELS,
@@ -44,7 +46,9 @@ from .wb_mr6c_modbus import (
 
 _MODEL_CONFIG_VALUES = {
     WBMR6C_MODEL: MODEL_WB_MR6C_V2,
+    MR6C_MODEL: MODEL_WB_MR6C_V2,
     WBMR6CU_MODEL: MODEL_WB_MR6CU_V2,
+    MR6CU_MODEL: MODEL_WB_MR6CU_V2,
 }
 
 

@@ -314,6 +314,7 @@ class IdentificationTest(unittest.TestCase):
     def test_decode_model_and_firmware(self) -> None:
         model_registers = [ord(char) for char in "WBMR6C"]
         extended_model_registers = [ord(char) for char in "WBMR6CU"] + [0]
+        compact_model_registers = [ord(char) for char in "MR6CU"] + [0]
         firmware_registers = [ord(char) for char in "1.24.0"] + [0] * 10
 
         self.assertEqual(
@@ -324,8 +325,12 @@ class IdentificationTest(unittest.TestCase):
             "WBMR6CU",
         )
         self.assertEqual(
+            wb_mr6c_modbus.decode_model_registers(compact_model_registers),
+            "MR6CU",
+        )
+        self.assertEqual(
             wb_mr6c_modbus.SUPPORTED_MODELS,
-            frozenset(("WBMR6C", "WBMR6CU")),
+            frozenset(("WBMR6C", "MR6C", "WBMR6CU", "MR6CU")),
         )
         self.assertEqual(
             wb_mr6c_modbus.decode_firmware_registers(firmware_registers), "1.24.0"
