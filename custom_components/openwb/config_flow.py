@@ -108,7 +108,7 @@ class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "cannot_connect"
                 else:
                     return self.async_create_entry(
-                        title=f"openWB bus {serial_port}", data=data
+                        title=f"openWB RS-485 {serial_port}", data=data
                     )
 
         return self.async_show_form(
@@ -150,7 +150,7 @@ class OpenWBDeviceSubentryFlow(config_entries.ConfigSubentryFlow):
                         errors["base"] = "unexpected_model"
                     else:
                         return self.async_create_entry(
-                            title=f"WB-MR6C {device_id}",
+                            title=f"Modbus module {device_id}",
                             data={
                                 CONF_DEVICE_ID: device_id,
                                 CONF_MODEL: MODEL_WB_MR6C_V2,

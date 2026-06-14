@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "Set up openWB",
-        "description": "Connect Home Assistant to an RS-485 serial bus for openWB devices.",
+        "title": "Add RS-485 bus",
+        "description": "Connect Home Assistant to an RS-485 serial bus for Modbus modules.",
         "data": {
           "serial_port": "Serial port",
           "baudrate": "Baud rate",
@@ -20,31 +20,31 @@
       "cannot_connect": "Unable to open the serial port. Check the path, permissions, and that no other Modbus master is using this RS-485 bus."
     },
     "abort": {
-      "already_configured": "This openWB serial bus is already configured."
+      "already_configured": "This RS-485 bus is already configured."
     }
   },
   "config_subentries": {
     "device": {
-      "title": "WB-MR6C device",
+      "title": "Modbus module",
       "step": {
         "user": {
-          "title": "Add WB-MR6C device",
-          "description": "Add one WB-MR6C module on this RS-485 bus.",
+          "title": "Add Modbus module",
+          "description": "Add one Modbus module on this RS-485 bus.",
           "data": {
-            "device_id": "Modbus device address"
+            "device_id": "Modbus address"
           }
         }
       },
       "error": {
-        "invalid_device_id": "Device address must be an integer from 1 to 247.",
-        "duplicate_device_id": "This bus already has a device with this address.",
+        "invalid_device_id": "Modbus address must be an integer from 1 to 247.",
+        "duplicate_device_id": "This bus already has a module with this address.",
         "invalid_bus_config": "The parent serial bus configuration is invalid. Remove and re-add the bus.",
-        "cannot_connect": "Unable to communicate with the device at this address.",
-        "cannot_validate_device": "The device returned an invalid model or firmware response.",
-        "unexpected_model": "The device at this address is not a WB-MR6C module."
+        "cannot_connect": "Unable to communicate with the module at this address.",
+        "cannot_validate_device": "The module returned an invalid model or firmware response.",
+        "unexpected_model": "The module type at this address is not supported yet."
       },
       "abort": {
-        "already_configured": "This device is already configured on this bus."
+        "already_configured": "This module is already configured on this bus."
       }
     }
   }

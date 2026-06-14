@@ -759,7 +759,7 @@ class BusConfigFlowTest(unittest.IsolatedAsyncioTestCase):
         result = await flow.async_step_user({const.CONF_SERIAL_PORT: " /dev/ttyUSB0 "})
 
         self.assertEqual(result["type"], "create_entry")
-        self.assertEqual(result["title"], "openWB bus /dev/ttyUSB0")
+        self.assertEqual(result["title"], "openWB RS-485 /dev/ttyUSB0")
         self.assertEqual(
             result["data"],
             {
@@ -877,7 +877,7 @@ class DeviceSubentryFlowTest(unittest.IsolatedAsyncioTestCase):
         result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
 
         self.assertEqual(result["type"], "create_entry")
-        self.assertEqual(result["title"], "WB-MR6C 32")
+        self.assertEqual(result["title"], "Modbus module 32")
         self.assertEqual(result["unique_id"], "/dev/ttyUSB0:32")
         self.assertEqual(
             result["data"],
