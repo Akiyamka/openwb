@@ -1573,7 +1573,7 @@ class FakeSwitchCoordinator:
 
 class FakeRelayClient:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, int] | tuple[str, int, bool]] = []
         self.error: Exception | None = None
 
     async def turn_on(self, output: int) -> None:
@@ -1584,6 +1584,11 @@ class FakeRelayClient:
 
     async def toggle(self, output: int) -> None:
         await self._call("toggle", output)
+
+    async def set_relay_command(self, output: int, value: bool) -> None:
+        if self.error is not None:
+            raise self.error
+        self.calls.append(("set_relay_command", output, value))
 
     async def _call(self, method: str, output: int) -> None:
         if self.error is not None:
@@ -1598,6 +1603,7 @@ def _metadata(
     supports_inputs: bool = True,
     supports_press_counters: bool = True,
     supports_mapping_matrix: bool = True,
+    supports_relay_one_shot_commands: bool = False,
     supports_relay_state_discrete_inputs: bool = True,
 ) -> integration.WBMR6CDeviceMetadata:
     return integration.WBMR6CDeviceMetadata(
@@ -1606,6 +1612,7 @@ def _metadata(
         supports_inputs=supports_inputs,
         supports_press_counters=supports_press_counters,
         supports_mapping_matrix=supports_mapping_matrix,
+        supports_relay_one_shot_commands=supports_relay_one_shot_commands,
         supports_relay_state_discrete_inputs=supports_relay_state_discrete_inputs,
     )
 
@@ -1629,6 +1636,7 @@ def _switch_entry(
     serial_port: str = "/dev/ttyUSB0",
     device_id: int = 32,
     relay_states: dict[int, bool] | None = None,
+    supports_relay_one_shot_commands: bool = False,
 ) -> tuple[StubConfigEntry, FakeRelayClient, FakeSwitchCoordinator]:
     entry = _bus_entry(
         serial_port=serial_port,
@@ -1639,7 +1647,11 @@ def _switch_entry(
     entry.runtime_data = types.SimpleNamespace(
         coordinator=coordinator,
         clients={device_id: client},
-        device_metadata={device_id: _metadata()},
+        device_metadata={
+            device_id: _metadata(
+                supports_relay_one_shot_commands=supports_relay_one_shot_commands
+            )
+        },
     )
     return entry, client, coordinator
 
@@ -1650,6 +1662,7 @@ def _relay_switch(
     device_id: int = 32,
     output: int = 1,
     relay_states: dict[int, bool] | None = None,
+    supports_relay_one_shot_commands: bool = False,
 ) -> tuple[
     switch_platform.OpenWBRelaySwitch,
     FakeRelayClient,
@@ -1659,6 +1672,10 @@ def _relay_switch(
         serial_port=serial_port,
         device_id=device_id,
         relay_states=relay_states,
+        supports_relay_one_shot_commands=supports_relay_one_shot_commands,
+    )
+    metadata = _metadata(
+        supports_relay_one_shot_commands=supports_relay_one_shot_commands
     )
     entity = switch_platform.OpenWBRelaySwitch(
         entry=entry,
@@ -1666,7 +1683,7 @@ def _relay_switch(
         serial_port=serial_port,
         device_id=device_id,
         output=output,
-        metadata=_metadata(),
+        metadata=metadata,
     )
     return entity, client, coordinator
 
@@ -2169,7 +2186,9 @@ class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(entity.available)
         self.assertIsNone(entity.is_on)
 
-    async def test_turn_on_and_off_call_backend_and_set_optimistic_state(self) -> None:
+    async def test_turn_on_and_off_use_command_coils_without_one_shot_support(
+        self,
+    ) -> None:
         entity, client, coordinator = _relay_switch(
             output=3,
             relay_states={3: False},
@@ -2177,19 +2196,27 @@ class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
 
         await entity.async_turn_on()
 
-        self.assertEqual(client.calls, [("turn_on", 3)])
+        self.assertEqual(client.calls, [("set_relay_command", 3, True)])
         self.assertTrue(entity.is_on)
         self.assertEqual(entity.async_write_ha_state_calls, 1)
         self.assertEqual(coordinator.async_request_refresh_calls, 0)
 
         await entity.async_turn_off()
 
-        self.assertEqual(client.calls, [("turn_on", 3), ("turn_off", 3)])
+        self.assertEqual(
+            client.calls,
+            [
+                ("set_relay_command", 3, True),
+                ("set_relay_command", 3, False),
+            ],
+        )
         self.assertFalse(entity.is_on)
         self.assertEqual(entity.async_write_ha_state_calls, 2)
         self.assertEqual(coordinator.async_request_refresh_calls, 0)
 
-    async def test_toggle_calls_backend_and_sets_optimistic_inverse(self) -> None:
+    async def test_toggle_uses_command_coil_inverse_without_one_shot_support(
+        self,
+    ) -> None:
         entity, client, coordinator = _relay_switch(
             output=4,
             relay_states={4: False},
@@ -2197,10 +2224,23 @@ class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
 
         await entity.async_toggle()
 
-        self.assertEqual(client.calls, [("toggle", 4)])
+        self.assertEqual(client.calls, [("set_relay_command", 4, True)])
         self.assertTrue(entity.is_on)
         self.assertEqual(entity.async_write_ha_state_calls, 1)
         self.assertEqual(coordinator.async_request_refresh_calls, 0)
+
+    async def test_new_firmware_uses_one_shot_relay_commands(self) -> None:
+        entity, client, _coordinator = _relay_switch(
+            output=3,
+            relay_states={3: False},
+            supports_relay_one_shot_commands=True,
+        )
+
+        await entity.async_turn_on()
+        await entity.async_turn_off()
+        await entity.async_toggle()
+
+        self.assertEqual(client.calls, [("turn_on", 3), ("turn_off", 3), ("toggle", 3)])
 
     async def test_coordinator_update_clears_optimistic_state(self) -> None:
         entity, _client, coordinator = _relay_switch(

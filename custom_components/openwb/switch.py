@@ -77,6 +77,9 @@ class OpenWBRelaySwitch(CoordinatorEntity, SwitchEntity):
         self._client = client
         self._device_id = device_id
         self._output = output
+        self._supports_relay_one_shot_commands = (
+            metadata.supports_relay_one_shot_commands if metadata else False
+        )
         self._optimistic_state: bool | None = None
 
         device_identifier = f"{serial_port}:{device_id}"
@@ -116,16 +119,47 @@ class OpenWBRelaySwitch(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the relay output on."""
-        await self._async_write_relay("turn on", self._client.turn_on, True)
+        if self._supports_relay_one_shot_commands:
+            await self._async_write_relay("turn on", self._client.turn_on, True)
+            return
+
+        await self._async_write_relay(
+            "turn on",
+            lambda output: self._client.set_relay_command(output, True),
+            True,
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the relay output off."""
-        await self._async_write_relay("turn off", self._client.turn_off, False)
+        if self._supports_relay_one_shot_commands:
+            await self._async_write_relay("turn off", self._client.turn_off, False)
+            return
+
+        await self._async_write_relay(
+            "turn off",
+            lambda output: self._client.set_relay_command(output, False),
+            False,
+        )
 
     async def async_toggle(self, **kwargs: Any) -> None:
         """Toggle the relay output."""
         current_state = self.is_on
         optimistic_state = None if current_state is None else not current_state
+        if not self._supports_relay_one_shot_commands:
+            if optimistic_state is None:
+                raise HomeAssistantError(
+                    f"Unable to toggle openWB relay {self._output} "
+                    f"on device {self._device_id} without a current relay state"
+                )
+            await self._async_write_relay(
+                "toggle",
+                lambda output: self._client.set_relay_command(
+                    output, optimistic_state
+                ),
+                optimistic_state,
+            )
+            return
+
         await self._async_write_relay(
             "toggle", self._client.toggle, optimistic_state
         )

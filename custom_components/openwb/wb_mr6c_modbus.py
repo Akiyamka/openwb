@@ -72,6 +72,7 @@ REG_SECOND_PRESS_WAIT_MS_BASE = 1140
 
 MIN_FIRMWARE_PRESS_COUNTERS = (1, 17, 0)
 MIN_FIRMWARE_RELAY_STATE_DISCRETE_INPUTS = (1, 24, 0)
+MIN_FIRMWARE_RELAY_ONE_SHOT_COMMANDS = (1, 26, 0)
 
 
 class WBMR6CModbusError(Exception):
@@ -1062,6 +1063,13 @@ def firmware_supports_relay_state_discrete_inputs(
 ) -> bool:
     """Return whether firmware supports relay-state discrete inputs 96..101."""
     return _firmware_version_tuple(version) >= MIN_FIRMWARE_RELAY_STATE_DISCRETE_INPUTS
+
+
+def firmware_supports_relay_one_shot_commands(
+    version: str | Sequence[int],
+) -> bool:
+    """Return whether firmware supports one-shot relay commands 100/108/116."""
+    return _firmware_version_tuple(version) >= MIN_FIRMWARE_RELAY_ONE_SHOT_COMMANDS
 
 
 def press_counter_delta(previous: int | None, current: int) -> int:

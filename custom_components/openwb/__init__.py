@@ -41,6 +41,7 @@ from .wb_mr6c_modbus import (
     WBMR6CModbus,
     WBMR6CModbusConnectionError,
     WBMR6CModbusError,
+    firmware_supports_relay_one_shot_commands,
     firmware_supports_press_counters,
     firmware_supports_relay_state_discrete_inputs,
     press_counter_delta,
@@ -89,6 +90,7 @@ class WBMR6CDeviceMetadata:
     supports_inputs: bool
     supports_press_counters: bool
     supports_mapping_matrix: bool
+    supports_relay_one_shot_commands: bool
     supports_relay_state_discrete_inputs: bool
 
 
@@ -430,6 +432,9 @@ async def _async_device_metadata(
             _supports_inputs(model) and _supports_press_counters(firmware_version)
         ),
         supports_mapping_matrix=_supports_mapping_matrix(model),
+        supports_relay_one_shot_commands=(
+            _supports_relay_one_shot_commands(firmware_version)
+        ),
         supports_relay_state_discrete_inputs=(
             _supports_relay_state_discrete_inputs(firmware_version)
         ),
@@ -495,6 +500,16 @@ def _supports_relay_state_discrete_inputs(firmware_version: str | None) -> bool:
         return False
 
 
+def _supports_relay_one_shot_commands(firmware_version: str | None) -> bool:
+    """Return whether firmware metadata enables one-shot relay commands."""
+    if firmware_version is None:
+        return False
+    try:
+        return firmware_supports_relay_one_shot_commands(firmware_version)
+    except ValueError:
+        return False
+
+
 def _supports_inputs(model: str | None) -> bool:
     """Return whether the model has physical inputs."""
     return _device_model_key(model) != MODEL_WB_MR6CU_V2
@@ -538,5 +553,6 @@ _UNKNOWN_DEVICE_METADATA = WBMR6CDeviceMetadata(
     supports_inputs=True,
     supports_press_counters=False,
     supports_mapping_matrix=True,
+    supports_relay_one_shot_commands=False,
     supports_relay_state_discrete_inputs=False,
 )
