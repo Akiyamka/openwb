@@ -2,30 +2,51 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from contextlib import suppress
 from dataclasses import dataclass
+from datetime import timedelta
 import logging
 from typing import Any, Mapping
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     CONFIG_ENTRY_VERSION,
     CONF_BAUDRATE,
+    CONF_DEVICE_ID,
+    CONF_FIRMWARE_VERSION,
+    CONF_MODEL,
     CONF_PARITY,
     CONF_SERIAL_PORT,
     CONF_STOPBITS,
+    DOMAIN,
+    SUBENTRY_TYPE_DEVICE,
     PARITY_VALUES,
     STOPBITS_VALUES,
 )
 from .wb_mr6c_modbus import (
+    PressCounterEvent,
     ModbusTransport,
     PymodbusSerialTransport,
+    WBMR6CModbus,
     WBMR6CModbusConnectionError,
+    WBMR6CModbusError,
+    firmware_supports_press_counters,
+    firmware_supports_relay_state_discrete_inputs,
 )
 
 _LOGGER = logging.getLogger(__name__)
+_BUS_UPDATE_INTERVAL = timedelta(seconds=1)
+_PRESS_COUNTER_EVENTS = (
+    PressCounterEvent.SHORT,
+    PressCounterEvent.LONG,
+    PressCounterEvent.DOUBLE,
+    PressCounterEvent.SHORT_THEN_LONG,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +64,83 @@ class OpenWBBusRuntimeData:
     """Runtime data for one openWB serial bus."""
 
     transport: ModbusTransport
+    coordinator: WBMR6CBusCoordinator
+    clients: dict[int, WBMR6CModbus]
+    device_metadata: dict[int, WBMR6CDeviceMetadata]
+    remove_coordinator_listener: Callable[[], None]
+
+
+@dataclass(frozen=True, slots=True)
+class WBMR6CDeviceMetadata:
+    """Static device metadata retained for polling feature gates."""
+
+    model: str | None
+    firmware_version: str | None
+    supports_press_counters: bool
+    supports_relay_state_discrete_inputs: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WBMR6CDeviceState:
+    """Live WB-MR6C state read by the bus coordinator."""
+
+    input_states: dict[int, bool]
+    press_counts: dict[tuple[int, str], int]
+    relay_states: dict[int, bool]
+    relay_commands: dict[int, bool]
+
+
+class WBMR6CBusCoordinator(DataUpdateCoordinator):
+    """Poll all WB-MR6C devices on one serial bus sequentially."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        clients: dict[int, WBMR6CModbus],
+        device_metadata: dict[int, WBMR6CDeviceMetadata],
+    ) -> None:
+        """Initialize the bus coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN} {entry.entry_id}",
+            update_interval=_BUS_UPDATE_INTERVAL,
+            config_entry=entry,
+        )
+        self.clients = clients
+        self.device_metadata = device_metadata
+
+    async def _async_update_data(self) -> dict[int, WBMR6CDeviceState]:
+        """Fetch one live-state snapshot for all currently configured devices."""
+        data: dict[int, WBMR6CDeviceState] = {}
+        connection_errors: dict[int, WBMR6CModbusConnectionError] = {}
+        for device_id in self.clients:
+            client = self.clients[device_id]
+            metadata = self.device_metadata.get(device_id, _UNKNOWN_DEVICE_METADATA)
+            try:
+                data[device_id] = await _async_read_device_state(client, metadata)
+            except WBMR6CModbusConnectionError as err:
+                connection_errors[device_id] = err
+                _LOGGER.debug(
+                    "Skipping unreachable openWB device %s during bus poll: %s",
+                    device_id,
+                    err,
+                )
+            except WBMR6CModbusError as err:
+                _LOGGER.debug(
+                    "Skipping unavailable openWB device %s during bus poll: %s",
+                    device_id,
+                    err,
+                )
+
+        if self.clients and not data and len(connection_errors) == len(self.clients):
+            first_error = next(iter(connection_errors.values()))
+            raise UpdateFailed(
+                "Unable to communicate with any openWB device"
+            ) from first_error
+
+        return data
 
 
 OpenWBConfigEntry = ConfigEntry[OpenWBBusRuntimeData]
@@ -95,14 +193,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenWBConfigEntry) -> bo
             f"Unable to open openWB serial bus {bus_config.serial_port}"
         ) from err
 
-    entry.runtime_data = OpenWBBusRuntimeData(transport=transport)
+    remove_coordinator_listener: Callable[[], None] | None = None
+    try:
+        clients, device_metadata = await _async_device_clients_from_subentries(
+            entry,
+            transport,
+        )
+        coordinator = WBMR6CBusCoordinator(hass, entry, clients, device_metadata)
+        remove_coordinator_listener = coordinator.async_add_listener(
+            _noop_coordinator_listener
+        )
+        entry.runtime_data = OpenWBBusRuntimeData(
+            transport=transport,
+            coordinator=coordinator,
+            clients=clients,
+            device_metadata=device_metadata,
+            remove_coordinator_listener=remove_coordinator_listener,
+        )
+        await coordinator.async_config_entry_first_refresh()
+    except BaseException:
+        if remove_coordinator_listener is not None:
+            remove_coordinator_listener()
+        with suppress(WBMR6CModbusConnectionError):
+            await transport.close()
+        raise
+
+    _register_entry_update_reload_listener(entry)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: OpenWBConfigEntry) -> bool:
     """Unload an openWB config entry."""
+    entry.runtime_data.remove_coordinator_listener()
     await entry.runtime_data.transport.close()
     return True
+
+
+def _noop_coordinator_listener() -> None:
+    """Keep the bus coordinator active before entity platforms subscribe."""
+
+
+def _register_entry_update_reload_listener(entry: ConfigEntry) -> None:
+    """Reload the bus entry after config entry or subentry changes."""
+    add_update_listener = getattr(entry, "add_update_listener", None)
+    async_on_unload = getattr(entry, "async_on_unload", None)
+    if callable(add_update_listener) and callable(async_on_unload):
+        async_on_unload(add_update_listener(_async_reload_entry))
+
+
+async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload an openWB bus entry so runtime clients match subentries."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 def _bus_config_from_entry_data(data: Mapping[str, Any]) -> OpenWBBusConfig | None:
@@ -132,3 +273,162 @@ def _bus_config_from_entry_data(data: Mapping[str, Any]) -> OpenWBBusConfig | No
 def _is_positive_int(value: Any) -> bool:
     """Return whether value is a positive integer, excluding bool."""
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+async def _async_device_clients_from_subentries(
+    entry: ConfigEntry,
+    transport: ModbusTransport,
+) -> tuple[dict[int, WBMR6CModbus], dict[int, WBMR6CDeviceMetadata]]:
+    """Create one client and metadata record for each configured device subentry."""
+    clients: dict[int, WBMR6CModbus] = {}
+    device_metadata: dict[int, WBMR6CDeviceMetadata] = {}
+
+    for subentry_data in _device_subentry_data(entry):
+        device_id = _device_id_from_subentry_data(subentry_data)
+        if device_id is None:
+            _LOGGER.warning(
+                "Skipping openWB device subentry with invalid device id: %s",
+                subentry_data.get(CONF_DEVICE_ID),
+            )
+            continue
+
+        client = WBMR6CModbus(transport, device_id=device_id)
+        clients[device_id] = client
+        device_metadata[device_id] = await _async_device_metadata(
+            client,
+            subentry_data,
+        )
+
+    return clients, device_metadata
+
+
+def _device_subentry_data(entry: ConfigEntry) -> Iterable[Mapping[str, Any]]:
+    """Yield raw data for configured device subentries on a bus entry."""
+    for subentry in getattr(entry, "subentries", {}).values():
+        subentry_type = getattr(subentry, "subentry_type", SUBENTRY_TYPE_DEVICE)
+        if subentry_type != SUBENTRY_TYPE_DEVICE:
+            continue
+
+        data = getattr(subentry, "data", {})
+        if isinstance(data, Mapping):
+            yield data
+
+
+def _device_id_from_subentry_data(data: Mapping[str, Any]) -> int | None:
+    """Return a valid Modbus device id from subentry data, if present."""
+    device_id = data.get(CONF_DEVICE_ID)
+    if (
+        isinstance(device_id, int)
+        and not isinstance(device_id, bool)
+        and 1 <= device_id <= 247
+    ):
+        return device_id
+    return None
+
+
+async def _async_device_metadata(
+    client: WBMR6CModbus,
+    subentry_data: Mapping[str, Any],
+) -> WBMR6CDeviceMetadata:
+    """Read model and firmware metadata for one configured device."""
+    stored_model = _non_empty_string(subentry_data.get(CONF_MODEL))
+    stored_firmware_version = _non_empty_string(
+        subentry_data.get(CONF_FIRMWARE_VERSION)
+    )
+
+    try:
+        model = _non_empty_string(await client.read_model())
+    except WBMR6CModbusError as err:
+        _LOGGER.debug(
+            "Could not refresh openWB device %s model during setup: %s",
+            client.device_id,
+            err,
+        )
+        model = stored_model
+
+    try:
+        firmware_version = _non_empty_string(await client.read_firmware_version())
+    except WBMR6CModbusError as err:
+        _LOGGER.debug(
+            "Could not refresh openWB device %s firmware during setup: %s",
+            client.device_id,
+            err,
+        )
+        firmware_version = stored_firmware_version
+
+    model = model or stored_model
+    firmware_version = firmware_version or stored_firmware_version
+
+    return WBMR6CDeviceMetadata(
+        model=model,
+        firmware_version=firmware_version,
+        supports_press_counters=_supports_press_counters(firmware_version),
+        supports_relay_state_discrete_inputs=(
+            _supports_relay_state_discrete_inputs(firmware_version)
+        ),
+    )
+
+
+async def _async_read_device_state(
+    client: WBMR6CModbus,
+    metadata: WBMR6CDeviceMetadata,
+) -> WBMR6CDeviceState:
+    """Read one device state snapshot, honoring firmware-dependent features."""
+    input_states = await client.read_input_states()
+    relay_commands = await client.read_relay_commands()
+
+    if metadata.supports_relay_state_discrete_inputs:
+        relay_states = await client.read_relay_states()
+    else:
+        relay_states = dict(relay_commands)
+
+    press_counts: dict[tuple[int, str], int] = {}
+    if metadata.supports_press_counters:
+        for event in _PRESS_COUNTER_EVENTS:
+            counter_values = await client.read_press_counters(event)
+            for input_number, count in counter_values.items():
+                press_counts[(input_number, event.name.lower())] = count
+
+    return WBMR6CDeviceState(
+        input_states=input_states,
+        press_counts=press_counts,
+        relay_states=relay_states,
+        relay_commands=relay_commands,
+    )
+
+
+def _non_empty_string(value: Any) -> str | None:
+    """Return stripped non-empty strings only."""
+    if isinstance(value, str):
+        value = value.strip()
+        if value:
+            return value
+    return None
+
+
+def _supports_press_counters(firmware_version: str | None) -> bool:
+    """Return whether firmware metadata enables press-counter polling."""
+    if firmware_version is None:
+        return False
+    try:
+        return firmware_supports_press_counters(firmware_version)
+    except ValueError:
+        return False
+
+
+def _supports_relay_state_discrete_inputs(firmware_version: str | None) -> bool:
+    """Return whether firmware metadata enables actual relay-state polling."""
+    if firmware_version is None:
+        return False
+    try:
+        return firmware_supports_relay_state_discrete_inputs(firmware_version)
+    except ValueError:
+        return False
+
+
+_UNKNOWN_DEVICE_METADATA = WBMR6CDeviceMetadata(
+    model=None,
+    firmware_version=None,
+    supports_press_counters=False,
+    supports_relay_state_discrete_inputs=False,
+)

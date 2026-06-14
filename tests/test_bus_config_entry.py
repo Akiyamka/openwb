@@ -23,6 +23,49 @@ class ConfigEntryNotReady(Exception):
     """Stub Home Assistant setup retry exception."""
 
 
+class UpdateFailed(Exception):
+    """Stub Home Assistant coordinator update failure."""
+
+
+class DataUpdateCoordinator:
+    """Stub Home Assistant DataUpdateCoordinator."""
+
+    def __init__(
+        self,
+        hass: Any,
+        logger: Any,
+        *,
+        name: str,
+        update_interval: Any | None = None,
+        config_entry: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.hass = hass
+        self.logger = logger
+        self.name = name
+        self.update_interval = update_interval
+        self.config_entry = config_entry
+        self.kwargs = kwargs
+        self.data: Any = None
+        self.async_config_entry_first_refresh_calls = 0
+        self.listeners: list[Any] = []
+
+    async def async_config_entry_first_refresh(self) -> None:
+        self.async_config_entry_first_refresh_calls += 1
+        self.data = await self._async_update_data()
+
+    async def async_request_refresh(self) -> None:
+        self.data = await self._async_update_data()
+
+    def async_add_listener(self, update_callback: Any) -> Any:
+        self.listeners.append(update_callback)
+
+        def remove_listener() -> None:
+            self.listeners.remove(update_callback)
+
+        return remove_listener
+
+
 def callback(func: Any) -> Any:
     """Stub Home Assistant callback decorator."""
     return func
@@ -134,9 +177,22 @@ class StubConfigEntry:
         self.entry_id = "bus-entry"
         self.version = version
         self.subentries = subentries or {}
+        self.update_listeners: list[Any] = []
+        self.unload_callbacks: list[Any] = []
 
     def __class_getitem__(cls, item: object) -> type[StubConfigEntry]:
         return cls
+
+    def add_update_listener(self, listener: Any) -> Any:
+        self.update_listeners.append(listener)
+
+        def remove_listener() -> None:
+            self.update_listeners.remove(listener)
+
+        return remove_listener
+
+    def async_on_unload(self, callback: Any) -> None:
+        self.unload_callbacks.append(callback)
 
 
 class Schema:
@@ -185,10 +241,14 @@ def _install_homeassistant_stubs() -> None:
 
     helpers = types.ModuleType("homeassistant.helpers")
     selector = types.ModuleType("homeassistant.helpers.selector")
+    update_coordinator = types.ModuleType("homeassistant.helpers.update_coordinator")
     selector.TextSelector = TextSelector
     selector.TextSelectorType = TextSelectorType
     selector.SelectSelector = SelectSelector
     helpers.selector = selector
+    update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
+    update_coordinator.UpdateFailed = UpdateFailed
+    helpers.update_coordinator = update_coordinator
 
     voluptuous = types.ModuleType("voluptuous")
     voluptuous.Schema = Schema
@@ -207,6 +267,7 @@ def _install_homeassistant_stubs() -> None:
     sys.modules["homeassistant.exceptions"] = exceptions
     sys.modules["homeassistant.helpers"] = helpers
     sys.modules["homeassistant.helpers.selector"] = selector
+    sys.modules["homeassistant.helpers.update_coordinator"] = update_coordinator
     sys.modules["voluptuous"] = voluptuous
 
 
@@ -234,6 +295,7 @@ _STUBBED_MODULE_NAMES = (
     "homeassistant.exceptions",
     "homeassistant.helpers",
     "homeassistant.helpers.selector",
+    "homeassistant.helpers.update_coordinator",
     "voluptuous",
     "custom_components.openwb",
     "custom_components.openwb.config_flow",
@@ -269,6 +331,10 @@ modbus = importlib.import_module("custom_components.openwb.wb_mr6c_modbus")
 class FakeSerialTransport:
     instances: list[FakeSerialTransport] = []
     connect_error: Exception | None = None
+    initial_coils: dict[tuple[int, int], bool] = {}
+    initial_discrete_inputs: dict[tuple[int, int], bool] = {}
+    initial_holding_registers: dict[tuple[int, int], int] = {}
+    initial_unavailable_devices: set[int] = set()
 
     def __init__(
         self,
@@ -282,6 +348,12 @@ class FakeSerialTransport:
         self.baudrate = baudrate
         self.parity = parity
         self.stopbits = stopbits
+        self.coils = dict(FakeSerialTransport.initial_coils)
+        self.discrete_inputs = dict(FakeSerialTransport.initial_discrete_inputs)
+        self.holding_registers = dict(FakeSerialTransport.initial_holding_registers)
+        self.unavailable_devices = set(FakeSerialTransport.initial_unavailable_devices)
+        self.response_error_devices: set[int] = set()
+        self.calls: list[tuple[str, int, int | bool, int]] = []
         self.connect_calls = 0
         self.close_calls = 0
         FakeSerialTransport.instances.append(self)
@@ -293,6 +365,63 @@ class FakeSerialTransport:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+    def set_coil(self, address: int, value: bool, *, device_id: int) -> None:
+        self.coils[(device_id, address)] = bool(value)
+
+    def set_discrete_input(
+        self, address: int, value: bool, *, device_id: int
+    ) -> None:
+        self.discrete_inputs[(device_id, address)] = bool(value)
+
+    def set_holding_register(self, address: int, value: int, *, device_id: int) -> None:
+        self.holding_registers[(device_id, address)] = value
+
+    async def read_coils(
+        self, address: int, count: int, device_id: int
+    ) -> list[bool]:
+        self.calls.append(("read_coils", address, count, device_id))
+        self._check_device(device_id)
+        return [
+            self.coils.get((device_id, address + offset), False)
+            for offset in range(count)
+        ]
+
+    async def write_coil(self, address: int, value: bool, device_id: int) -> None:
+        self.calls.append(("write_coil", address, value, device_id))
+        self._check_device(device_id)
+        self.coils[(device_id, address)] = bool(value)
+
+    async def read_discrete_inputs(
+        self, address: int, count: int, device_id: int
+    ) -> list[bool]:
+        self.calls.append(("read_discrete_inputs", address, count, device_id))
+        self._check_device(device_id)
+        return [
+            self.discrete_inputs.get((device_id, address + offset), False)
+            for offset in range(count)
+        ]
+
+    async def read_holding_registers(
+        self, address: int, count: int, device_id: int
+    ) -> list[int]:
+        self.calls.append(("read_holding_registers", address, count, device_id))
+        self._check_device(device_id)
+        return [
+            self.holding_registers.get((device_id, address + offset), 0)
+            for offset in range(count)
+        ]
+
+    async def write_register(self, address: int, value: int, device_id: int) -> None:
+        self.calls.append(("write_register", address, value, device_id))
+        self._check_device(device_id)
+        self.holding_registers[(device_id, address)] = value
+
+    def _check_device(self, device_id: int) -> None:
+        if device_id in self.unavailable_devices:
+            raise integration.WBMR6CModbusConnectionError("device unavailable")
+        if device_id in self.response_error_devices:
+            raise modbus.WBMR6CModbusResponseError("device response error")
 
 
 class FakeDeviceTransport:
@@ -370,8 +499,33 @@ def _set_device_identification(
     )
 
 
+def _seed_serial_identification(
+    *,
+    device_id: int,
+    model: str = "WBMR6C",
+    firmware_version: str = "1.24.0",
+) -> None:
+    seed = types.SimpleNamespace(
+        holding_registers=FakeSerialTransport.initial_holding_registers
+    )
+    _set_ascii_registers(
+        seed,
+        device_id=device_id,
+        base_address=modbus.REG_MODEL_BASE,
+        length=modbus.REG_MODEL_LENGTH,
+        value=model,
+    )
+    _set_ascii_registers(
+        seed,
+        device_id=device_id,
+        base_address=modbus.REG_FIRMWARE_VERSION_BASE,
+        length=modbus.REG_FIRMWARE_VERSION_MAX_LENGTH,
+        value=firmware_version,
+    )
+
+
 def _set_ascii_registers(
-    transport: FakeDeviceTransport,
+    transport: Any,
     *,
     device_id: int,
     base_address: int,
@@ -405,6 +559,22 @@ def _bus_entry(
     return entry
 
 
+def _device_subentry(
+    device_id: int,
+    *,
+    firmware_version: str = "1.16.9",
+    model: str = const.MODEL_WB_MR6C_V2,
+) -> StubConfigSubentry:
+    return StubConfigSubentry(
+        data={
+            const.CONF_DEVICE_ID: device_id,
+            const.CONF_MODEL: model,
+            const.CONF_FIRMWARE_VERSION: firmware_version,
+        },
+        unique_id=f"/dev/ttyUSB0:{device_id}",
+    )
+
+
 def _device_flow(entry: StubConfigEntry) -> config_flow.OpenWBDeviceSubentryFlow:
     flow = config_flow.OpenWBDeviceSubentryFlow()
     flow._entry = entry
@@ -414,6 +584,7 @@ def _device_flow(entry: StubConfigEntry) -> config_flow.OpenWBDeviceSubentryFlow
 class FakeConfigEntriesManager:
     def __init__(self) -> None:
         self.updates: list[tuple[StubConfigEntry, dict[str, Any]]] = []
+        self.reloads: list[str] = []
 
     def async_update_entry(
         self, entry: StubConfigEntry, **kwargs: Any
@@ -421,6 +592,9 @@ class FakeConfigEntriesManager:
         self.updates.append((entry, kwargs))
         if "version" in kwargs:
             entry.version = kwargs["version"]
+
+    async def async_reload(self, entry_id: str) -> None:
+        self.reloads.append(entry_id)
 
 
 class BusConfigFlowTest(unittest.IsolatedAsyncioTestCase):
@@ -696,6 +870,10 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         FakeSerialTransport.instances = []
         FakeSerialTransport.connect_error = None
+        FakeSerialTransport.initial_coils = {}
+        FakeSerialTransport.initial_discrete_inputs = {}
+        FakeSerialTransport.initial_holding_registers = {}
+        FakeSerialTransport.initial_unavailable_devices = set()
         self.original_transport = integration.PymodbusSerialTransport
         integration.PymodbusSerialTransport = FakeSerialTransport
 
@@ -723,6 +901,274 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.stopbits, 1)
         self.assertEqual(transport.connect_calls, 1)
         self.assertIs(entry.runtime_data.transport, transport)
+        self.assertIsInstance(
+            entry.runtime_data.coordinator,
+            integration.WBMR6CBusCoordinator,
+        )
+        self.assertEqual(entry.runtime_data.clients, {})
+        self.assertEqual(entry.runtime_data.coordinator.data, {})
+        self.assertEqual(
+            entry.runtime_data.coordinator.listeners,
+            [integration._noop_coordinator_listener],
+        )
+        self.assertEqual(entry.update_listeners, [integration._async_reload_entry])
+        self.assertEqual(len(entry.unload_callbacks), 1)
+
+    async def test_setup_creates_shared_transport_and_clients_per_subentry(
+        self,
+    ) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={
+                "device-32": _device_subentry(32),
+                "device-33": _device_subentry(33),
+            },
+        )
+
+        self.assertTrue(
+            await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        )
+
+        transport = FakeSerialTransport.instances[0]
+        runtime = entry.runtime_data
+        self.assertIs(runtime.transport, transport)
+        self.assertEqual(set(runtime.clients), {32, 33})
+        self.assertIs(runtime.clients[32].transport, transport)
+        self.assertIs(runtime.clients[33].transport, transport)
+        self.assertEqual(set(runtime.coordinator.data), {32, 33})
+        self.assertEqual(
+            transport.calls,
+            [
+                ("read_holding_registers", modbus.REG_MODEL_BASE, 6, 32),
+                (
+                    "read_holding_registers",
+                    modbus.REG_FIRMWARE_VERSION_BASE,
+                    16,
+                    32,
+                ),
+                ("read_holding_registers", modbus.REG_MODEL_BASE, 6, 33),
+                (
+                    "read_holding_registers",
+                    modbus.REG_FIRMWARE_VERSION_BASE,
+                    16,
+                    33,
+                ),
+                ("read_discrete_inputs", modbus.DISCRETE_INPUT_STATE_BASE, 8, 32),
+                ("read_coils", modbus.COIL_RELAY_COMMAND_BASE, 6, 32),
+                ("read_discrete_inputs", modbus.DISCRETE_INPUT_STATE_BASE, 8, 33),
+                ("read_coils", modbus.COIL_RELAY_COMMAND_BASE, 6, 33),
+            ],
+        )
+
+    async def test_setup_refreshes_stale_subentry_metadata(self) -> None:
+        _seed_serial_identification(device_id=32, firmware_version="1.24.0")
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.16.9")},
+        )
+
+        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+
+        metadata = entry.runtime_data.device_metadata[32]
+        self.assertEqual(metadata.model, "WBMR6C")
+        self.assertEqual(metadata.firmware_version, "1.24.0")
+        self.assertTrue(metadata.supports_press_counters)
+        self.assertTrue(metadata.supports_relay_state_discrete_inputs)
+
+    async def test_coordinator_omits_failed_device_and_keeps_other_devices(
+        self,
+    ) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={
+                "device-32": _device_subentry(32),
+                "device-33": _device_subentry(33),
+            },
+        )
+        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        transport = FakeSerialTransport.instances[0]
+        transport.calls.clear()
+        transport.unavailable_devices.add(33)
+
+        await entry.runtime_data.coordinator.async_request_refresh()
+
+        self.assertEqual(set(entry.runtime_data.coordinator.data), {32})
+        self.assertEqual(
+            transport.calls,
+            [
+                ("read_discrete_inputs", modbus.DISCRETE_INPUT_STATE_BASE, 8, 32),
+                ("read_coils", modbus.COIL_RELAY_COMMAND_BASE, 6, 32),
+                ("read_discrete_inputs", modbus.DISCRETE_INPUT_STATE_BASE, 8, 33),
+            ],
+        )
+
+    async def test_coordinator_fails_when_all_devices_have_connection_errors(
+        self,
+    ) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={
+                "device-32": _device_subentry(32),
+                "device-33": _device_subentry(33),
+            },
+        )
+        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        transport = FakeSerialTransport.instances[0]
+        transport.calls.clear()
+        transport.unavailable_devices.update({32, 33})
+
+        with self.assertRaises(UpdateFailed):
+            await entry.runtime_data.coordinator.async_request_refresh()
+
+    async def test_setup_failure_closes_transport_and_removes_listener(self) -> None:
+        FakeSerialTransport.initial_unavailable_devices = {32, 33}
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={
+                "device-32": _device_subentry(32),
+                "device-33": _device_subentry(33),
+            },
+        )
+
+        with self.assertRaises(UpdateFailed):
+            await integration.async_setup_entry(types.SimpleNamespace(), entry)
+
+        transport = FakeSerialTransport.instances[0]
+        self.assertEqual(transport.close_calls, 1)
+        self.assertEqual(entry.runtime_data.coordinator.listeners, [])
+        self.assertEqual(entry.update_listeners, [])
+
+    async def test_entry_update_listener_reloads_bus_entry(self) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            }
+        )
+        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        config_entries_manager = FakeConfigEntriesManager()
+        hass = types.SimpleNamespace(config_entries=config_entries_manager)
+
+        await entry.update_listeners[0](hass, entry)
+
+        self.assertEqual(config_entries_manager.reloads, ["bus-entry"])
+
+    async def test_old_firmware_omits_press_counters(self) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.16.9")},
+        )
+
+        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+
+        state = entry.runtime_data.coordinator.data[32]
+        self.assertEqual(state.press_counts, {})
+        self.assertNotIn(
+            ("read_holding_registers", modbus.REG_PRESS_COUNTER_SHORT_BASE, 8, 32),
+            FakeSerialTransport.instances[0].calls,
+        )
+
+    async def test_old_firmware_falls_back_relay_states_to_command_coils(
+        self,
+    ) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.23.9")},
+        )
+        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        transport = FakeSerialTransport.instances[0]
+        transport.calls.clear()
+        transport.set_coil(modbus.COIL_RELAY_COMMAND_BASE, True, device_id=32)
+        transport.set_discrete_input(
+            modbus.DISCRETE_RELAY_STATE_BASE,
+            False,
+            device_id=32,
+        )
+
+        await entry.runtime_data.coordinator.async_request_refresh()
+
+        state = entry.runtime_data.coordinator.data[32]
+        self.assertTrue(state.relay_commands[1])
+        self.assertTrue(state.relay_states[1])
+        self.assertNotIn(
+            ("read_discrete_inputs", modbus.DISCRETE_RELAY_STATE_BASE, 6, 32),
+            transport.calls,
+        )
+
+    async def test_new_firmware_reads_actual_relay_states_and_press_counters(
+        self,
+    ) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.24.0")},
+        )
+        await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        transport = FakeSerialTransport.instances[0]
+        transport.calls.clear()
+        transport.set_coil(modbus.COIL_RELAY_COMMAND_BASE, False, device_id=32)
+        transport.set_discrete_input(
+            modbus.DISCRETE_RELAY_STATE_BASE,
+            True,
+            device_id=32,
+        )
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            7,
+            device_id=32,
+        )
+
+        await entry.runtime_data.coordinator.async_request_refresh()
+
+        state = entry.runtime_data.coordinator.data[32]
+        self.assertFalse(state.relay_commands[1])
+        self.assertTrue(state.relay_states[1])
+        self.assertEqual(state.press_counts[(1, "short")], 7)
+        self.assertIn(
+            ("read_discrete_inputs", modbus.DISCRETE_RELAY_STATE_BASE, 6, 32),
+            transport.calls,
+        )
 
     async def test_setup_returns_false_for_unsupported_entry_data(self) -> None:
         entry = StubConfigEntry({"device_id": 1})
@@ -759,12 +1205,15 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             }
         )
         await integration.async_setup_entry(types.SimpleNamespace(), entry)
+        coordinator = entry.runtime_data.coordinator
+        self.assertEqual(coordinator.listeners, [integration._noop_coordinator_listener])
 
         self.assertTrue(
             await integration.async_unload_entry(types.SimpleNamespace(), entry)
         )
 
         self.assertEqual(FakeSerialTransport.instances[0].close_calls, 1)
+        self.assertEqual(coordinator.listeners, [])
 
 
 class MigrationTest(unittest.IsolatedAsyncioTestCase):
