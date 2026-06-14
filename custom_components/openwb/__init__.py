@@ -37,10 +37,11 @@ from .wb_mr6c_modbus import (
     WBMR6CModbusError,
     firmware_supports_press_counters,
     firmware_supports_relay_state_discrete_inputs,
+    press_counter_delta,
 )
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS: tuple[str, ...] = ("switch",)
+PLATFORMS: tuple[str, ...] = ("binary_sensor", "event", "switch")
 _BUS_UPDATE_INTERVAL = timedelta(seconds=1)
 _PRESS_COUNTER_EVENTS = (
     PressCounterEvent.SHORT,
@@ -48,6 +49,8 @@ _PRESS_COUNTER_EVENTS = (
     PressCounterEvent.DOUBLE,
     PressCounterEvent.SHORT_THEN_LONG,
 )
+PRESS_EVENT_TYPES = ("short", "long", "double", "short-then-long")
+_PRESS_COUNTER_EVENT_TYPES = dict(zip(_PRESS_COUNTER_EVENTS, PRESS_EVENT_TYPES))
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,18 @@ class WBMR6CDeviceState:
     relay_commands: dict[int, bool]
 
 
+@dataclass(frozen=True, slots=True)
+class WBMR6CPressEvent:
+    """Detected press event emitted by the bus coordinator."""
+
+    device_id: int
+    input_number: int
+    event_type: str
+    counter: int
+    delta: int
+    sequence: int
+
+
 class WBMR6CBusCoordinator(DataUpdateCoordinator):
     """Poll all WB-MR6C devices on one serial bus sequentially."""
 
@@ -111,6 +126,9 @@ class WBMR6CBusCoordinator(DataUpdateCoordinator):
         )
         self.clients = clients
         self.device_metadata = device_metadata
+        self.press_events: dict[tuple[int, int, str], WBMR6CPressEvent] = {}
+        self._previous_press_counts: dict[tuple[int, int, str], int] = {}
+        self._press_event_sequences: dict[tuple[int, int, str], int] = {}
 
     async def _async_update_data(self) -> dict[int, WBMR6CDeviceState]:
         """Fetch one live-state snapshot for all currently configured devices."""
@@ -135,6 +153,8 @@ class WBMR6CBusCoordinator(DataUpdateCoordinator):
                     err,
                 )
 
+        self._update_press_events(data)
+
         if self.clients and not data and len(connection_errors) == len(self.clients):
             first_error = next(iter(connection_errors.values()))
             raise UpdateFailed(
@@ -142,6 +162,36 @@ class WBMR6CBusCoordinator(DataUpdateCoordinator):
             ) from first_error
 
         return data
+
+    def _update_press_events(self, data: dict[int, WBMR6CDeviceState]) -> None:
+        """Update counter baselines and expose newly detected press events."""
+        seen_keys: set[tuple[int, int, str]] = set()
+
+        for device_id, state in data.items():
+            for (input_number, event_type), current_count in state.press_counts.items():
+                key = (device_id, input_number, event_type)
+                seen_keys.add(key)
+                previous_count = self._previous_press_counts.get(key)
+                self._previous_press_counts[key] = current_count
+
+                delta = press_counter_delta(previous_count, current_count)
+                if delta == 0:
+                    continue
+
+                sequence = self._press_event_sequences.get(key, 0) + 1
+                self._press_event_sequences[key] = sequence
+                self.press_events[key] = WBMR6CPressEvent(
+                    device_id=device_id,
+                    input_number=input_number,
+                    event_type=event_type,
+                    counter=current_count,
+                    delta=delta,
+                    sequence=sequence,
+                )
+
+        for key in list(self._previous_press_counts):
+            if key not in seen_keys:
+                del self._previous_press_counts[key]
 
 
 OpenWBConfigEntry = ConfigEntry[OpenWBBusRuntimeData]
@@ -379,6 +429,13 @@ async def _async_read_device_state(
     metadata: WBMR6CDeviceMetadata,
 ) -> WBMR6CDeviceState:
     """Read one device state snapshot, honoring firmware-dependent features."""
+    press_counts: dict[tuple[int, str], int] = {}
+    if metadata.supports_press_counters:
+        for event in _PRESS_COUNTER_EVENTS:
+            counter_values = await client.read_press_counters(event)
+            for input_number, count in counter_values.items():
+                press_counts[(input_number, _PRESS_COUNTER_EVENT_TYPES[event])] = count
+
     input_states = await client.read_input_states()
     relay_commands = await client.read_relay_commands()
 
@@ -386,13 +443,6 @@ async def _async_read_device_state(
         relay_states = await client.read_relay_states()
     else:
         relay_states = dict(relay_commands)
-
-    press_counts: dict[tuple[int, str], int] = {}
-    if metadata.supports_press_counters:
-        for event in _PRESS_COUNTER_EVENTS:
-            counter_values = await client.read_press_counters(event)
-            for input_number, count in counter_values.items():
-                press_counts[(input_number, event.name.lower())] = count
 
     return WBMR6CDeviceState(
         input_states=input_states,

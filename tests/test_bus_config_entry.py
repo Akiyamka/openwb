@@ -107,6 +107,51 @@ class SwitchEntity:
         return getattr(self, "_attr_device_info", None)
 
 
+class BinarySensorEntity:
+    """Stub Home Assistant BinarySensorEntity."""
+
+    @property
+    def unique_id(self) -> str | None:
+        return getattr(self, "_attr_unique_id", None)
+
+    @property
+    def name(self) -> str | None:
+        return getattr(self, "_attr_name", None)
+
+    @property
+    def device_info(self) -> dict[str, Any] | None:
+        return getattr(self, "_attr_device_info", None)
+
+
+class EventEntity:
+    """Stub Home Assistant EventEntity."""
+
+    @property
+    def unique_id(self) -> str | None:
+        return getattr(self, "_attr_unique_id", None)
+
+    @property
+    def name(self) -> str | None:
+        return getattr(self, "_attr_name", None)
+
+    @property
+    def event_types(self) -> list[str] | None:
+        return getattr(self, "_attr_event_types", None)
+
+    @property
+    def device_info(self) -> dict[str, Any] | None:
+        return getattr(self, "_attr_device_info", None)
+
+    def _trigger_event(
+        self, event_type: str, event_attributes: dict[str, Any] | None = None
+    ) -> None:
+        triggered_events = getattr(self, "triggered_events", None)
+        if triggered_events is None:
+            triggered_events = []
+            self.triggered_events = triggered_events
+        triggered_events.append((event_type, event_attributes or {}))
+
+
 def callback(func: Any) -> Any:
     """Stub Home Assistant callback decorator."""
     return func
@@ -265,8 +310,14 @@ class TextSelectorType:
 def _install_homeassistant_stubs() -> None:
     homeassistant = types.ModuleType("homeassistant")
     components = types.ModuleType("homeassistant.components")
+    binary_sensor_component = types.ModuleType("homeassistant.components.binary_sensor")
+    binary_sensor_component.BinarySensorEntity = BinarySensorEntity
+    event_component = types.ModuleType("homeassistant.components.event")
+    event_component.EventEntity = EventEntity
     switch_component = types.ModuleType("homeassistant.components.switch")
     switch_component.SwitchEntity = SwitchEntity
+    components.binary_sensor = binary_sensor_component
+    components.event = event_component
     components.switch = switch_component
 
     config_entries = types.ModuleType("homeassistant.config_entries")
@@ -311,6 +362,8 @@ def _install_homeassistant_stubs() -> None:
 
     sys.modules["homeassistant"] = homeassistant
     sys.modules["homeassistant.components"] = components
+    sys.modules["homeassistant.components.binary_sensor"] = binary_sensor_component
+    sys.modules["homeassistant.components.event"] = event_component
     sys.modules["homeassistant.components.switch"] = switch_component
     sys.modules["homeassistant.config_entries"] = config_entries
     sys.modules["homeassistant.core"] = core
@@ -341,6 +394,8 @@ if _module_available("homeassistant.config_entries") or _module_available(
 _STUBBED_MODULE_NAMES = (
     "homeassistant",
     "homeassistant.components",
+    "homeassistant.components.binary_sensor",
+    "homeassistant.components.event",
     "homeassistant.components.switch",
     "homeassistant.config_entries",
     "homeassistant.core",
@@ -351,8 +406,10 @@ _STUBBED_MODULE_NAMES = (
     "homeassistant.helpers.update_coordinator",
     "voluptuous",
     "custom_components.openwb",
+    "custom_components.openwb.binary_sensor",
     "custom_components.openwb.config_flow",
     "custom_components.openwb.const",
+    "custom_components.openwb.event",
     "custom_components.openwb.switch",
     "custom_components.openwb.wb_mr6c_modbus",
 )
@@ -377,8 +434,10 @@ unittest.addModuleCleanup(_restore_stubbed_modules)
 _install_homeassistant_stubs()
 
 integration = importlib.import_module("custom_components.openwb")
+binary_sensor_platform = importlib.import_module("custom_components.openwb.binary_sensor")
 config_flow = importlib.import_module("custom_components.openwb.config_flow")
 const = importlib.import_module("custom_components.openwb.const")
+event_platform = importlib.import_module("custom_components.openwb.event")
 modbus = importlib.import_module("custom_components.openwb.wb_mr6c_modbus")
 switch_platform = importlib.import_module("custom_components.openwb.switch")
 
@@ -987,7 +1046,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(entry.unload_callbacks), 1)
         self.assertEqual(
             hass.config_entries.forwarded_entry_setups,
-            [(entry, ("switch",))],
+            [(entry, ("binary_sensor", "event", "switch"))],
         )
 
     async def test_setup_creates_shared_transport_and_clients_per_subentry(
@@ -1246,6 +1305,117 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             transport.calls,
         )
 
+    async def test_press_counter_increment_updates_coordinator_press_event(self) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.24.0")},
+        )
+        await integration.async_setup_entry(_hass(), entry)
+        transport = FakeSerialTransport.instances[0]
+
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            1,
+            device_id=32,
+        )
+        await entry.runtime_data.coordinator.async_request_refresh()
+
+        event = entry.runtime_data.coordinator.press_events[(32, 1, "short")]
+        self.assertEqual(event.event_type, "short")
+        self.assertEqual(event.counter, 1)
+        self.assertEqual(event.delta, 1)
+        self.assertNotIn((32, 1, "long"), entry.runtime_data.coordinator.press_events)
+
+    async def test_press_counter_wraparound_updates_coordinator_press_event(self) -> None:
+        FakeSerialTransport.initial_holding_registers = {
+            (32, modbus.REG_PRESS_COUNTER_SHORT_BASE): 0xFFFF
+        }
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.24.0")},
+        )
+        await integration.async_setup_entry(_hass(), entry)
+        transport = FakeSerialTransport.instances[0]
+
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            0,
+            device_id=32,
+        )
+        await entry.runtime_data.coordinator.async_request_refresh()
+
+        event = entry.runtime_data.coordinator.press_events[(32, 1, "short")]
+        self.assertEqual(event.counter, 0)
+        self.assertEqual(event.delta, 1)
+
+    async def test_first_press_counter_baseline_after_setup_fires_nothing(self) -> None:
+        FakeSerialTransport.initial_holding_registers = {
+            (32, modbus.REG_PRESS_COUNTER_SHORT_BASE): 7
+        }
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.24.0")},
+        )
+
+        await integration.async_setup_entry(_hass(), entry)
+
+        self.assertEqual(entry.runtime_data.coordinator.press_events, {})
+
+    async def test_first_press_counter_baseline_after_reconnect_fires_nothing(
+        self,
+    ) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"device-32": _device_subentry(32, firmware_version="1.24.0")},
+        )
+        await integration.async_setup_entry(_hass(), entry)
+        transport = FakeSerialTransport.instances[0]
+
+        transport.unavailable_devices.add(32)
+        with self.assertRaises(UpdateFailed):
+            await entry.runtime_data.coordinator.async_request_refresh()
+
+        transport.unavailable_devices.clear()
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            4,
+            device_id=32,
+        )
+        await entry.runtime_data.coordinator.async_request_refresh()
+
+        self.assertEqual(entry.runtime_data.coordinator.press_events, {})
+
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            5,
+            device_id=32,
+        )
+        await entry.runtime_data.coordinator.async_request_refresh()
+        self.assertEqual(
+            entry.runtime_data.coordinator.press_events[(32, 1, "short")].delta,
+            1,
+        )
+
     async def test_setup_returns_false_for_unsupported_entry_data(self) -> None:
         entry = StubConfigEntry({"device_id": 1})
 
@@ -1291,13 +1461,19 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coordinator.listeners, [])
         self.assertEqual(
             hass.config_entries.unloaded_platforms,
-            [(entry, ("switch",))],
+            [(entry, ("binary_sensor", "event", "switch"))],
         )
 
 
 class FakeSwitchCoordinator:
-    def __init__(self, data: dict[int, integration.WBMR6CDeviceState]) -> None:
+    def __init__(
+        self,
+        data: dict[int, integration.WBMR6CDeviceState],
+        press_events: dict[tuple[int, int, str], integration.WBMR6CPressEvent]
+        | None = None,
+    ) -> None:
         self.data = data
+        self.press_events = press_events or {}
         self.last_update_success = True
         self.async_request_refresh_calls = 0
 
@@ -1326,22 +1502,29 @@ class FakeRelayClient:
 
 
 def _metadata(
-    *, model: str | None = "WBMR6C", firmware_version: str | None = "1.24.0"
+    *,
+    model: str | None = "WBMR6C",
+    firmware_version: str | None = "1.24.0",
+    supports_press_counters: bool = True,
+    supports_relay_state_discrete_inputs: bool = True,
 ) -> integration.WBMR6CDeviceMetadata:
     return integration.WBMR6CDeviceMetadata(
         model=model,
         firmware_version=firmware_version,
-        supports_press_counters=True,
-        supports_relay_state_discrete_inputs=True,
+        supports_press_counters=supports_press_counters,
+        supports_relay_state_discrete_inputs=supports_relay_state_discrete_inputs,
     )
 
 
 def _device_state(
     relay_states: dict[int, bool] | None = None,
+    *,
+    input_states: dict[int, bool] | None = None,
+    press_counts: dict[tuple[int, str], int] | None = None,
 ) -> integration.WBMR6CDeviceState:
     return integration.WBMR6CDeviceState(
-        input_states={},
-        press_counts={},
+        input_states=dict(input_states or {}),
+        press_counts=dict(press_counts or {}),
         relay_states=dict(relay_states or {}),
         relay_commands={},
     )
@@ -1392,6 +1575,299 @@ def _relay_switch(
         metadata=_metadata(),
     )
     return entity, client, coordinator
+
+
+def _input_binary_sensor(
+    *,
+    serial_port: str = "/dev/ttyUSB0",
+    device_id: int = 32,
+    input_number: int = 1,
+    input_states: dict[int, bool] | None = None,
+) -> tuple[binary_sensor_platform.OpenWBInputBinarySensor, FakeSwitchCoordinator]:
+    entry = _bus_entry(
+        serial_port=serial_port,
+        subentries={"device-32": _device_subentry(device_id)},
+    )
+    coordinator = FakeSwitchCoordinator(
+        {device_id: _device_state(input_states=input_states)}
+    )
+    entry.runtime_data = types.SimpleNamespace(
+        coordinator=coordinator,
+        clients={device_id: object()},
+        device_metadata={device_id: _metadata()},
+    )
+    entity = binary_sensor_platform.OpenWBInputBinarySensor(
+        entry=entry,
+        serial_port=serial_port,
+        device_id=device_id,
+        input_number=input_number,
+        metadata=_metadata(),
+    )
+    return entity, coordinator
+
+
+def _input_press_event(
+    *,
+    serial_port: str = "/dev/ttyUSB0",
+    device_id: int = 32,
+    input_number: int = 1,
+    event_type: str = "short",
+    press_counts: dict[tuple[int, str], int] | None = None,
+    press_events: dict[tuple[int, int, str], integration.WBMR6CPressEvent]
+    | None = None,
+) -> tuple[event_platform.OpenWBInputPressEvent, FakeSwitchCoordinator]:
+    entry = _bus_entry(
+        serial_port=serial_port,
+        subentries={"device-32": _device_subentry(device_id, firmware_version="1.24.0")},
+    )
+    coordinator = FakeSwitchCoordinator(
+        {device_id: _device_state(press_counts=press_counts)},
+        press_events=press_events,
+    )
+    entry.runtime_data = types.SimpleNamespace(
+        coordinator=coordinator,
+        clients={device_id: object()},
+        device_metadata={device_id: _metadata()},
+    )
+    entity = event_platform.OpenWBInputPressEvent(
+        entry=entry,
+        serial_port=serial_port,
+        device_id=device_id,
+        input_number=input_number,
+        event_type=event_type,
+        metadata=_metadata(),
+    )
+    return entity, coordinator
+
+
+class BinarySensorPlatformTest(unittest.IsolatedAsyncioTestCase):
+    async def test_setup_creates_seven_input_sensors_per_device_subentry(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(32),
+                "subentry-33": _device_subentry(33),
+            }
+        )
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state(
+                        input_states={input_number: False for input_number in modbus.INPUTS}
+                    ),
+                    33: _device_state(
+                        input_states={input_number: False for input_number in modbus.INPUTS}
+                    ),
+                }
+            ),
+            clients={32: object(), 33: object()},
+            device_metadata={32: _metadata(), 33: _metadata()},
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await binary_sensor_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(len(add_calls), 2)
+        self.assertEqual([len(entities) for entities, _ in add_calls], [7, 7])
+        self.assertEqual(
+            [kwargs["config_subentry_id"] for _, kwargs in add_calls],
+            ["subentry-32", "subentry-33"],
+        )
+        unique_ids = [
+            entity.unique_id for entities, _ in add_calls for entity in entities
+        ]
+        self.assertIn("/dev/ttyUSB0:32:input_1", unique_ids)
+        self.assertIn("/dev/ttyUSB0:32:input_0", unique_ids)
+        self.assertIn("/dev/ttyUSB0:33:input_6", unique_ids)
+        self.assertEqual(len(set(unique_ids)), 14)
+
+    async def test_is_on_reads_coordinator_input_state_without_io(self) -> None:
+        entity, coordinator = _input_binary_sensor(
+            input_number=2,
+            input_states={2: True},
+        )
+
+        self.assertTrue(entity.is_on)
+        self.assertEqual(coordinator.async_request_refresh_calls, 0)
+
+    async def test_unavailable_when_device_or_input_missing_from_data(self) -> None:
+        entity, coordinator = _input_binary_sensor(
+            input_number=2,
+            input_states={2: True},
+        )
+
+        self.assertTrue(entity.available)
+
+        coordinator.data = {}
+        self.assertFalse(entity.available)
+        self.assertIsNone(entity.is_on)
+
+        coordinator.data = {32: _device_state(input_states={1: True})}
+        self.assertFalse(entity.available)
+        self.assertIsNone(entity.is_on)
+
+
+class EventPlatformTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        FakeSerialTransport.instances = []
+        FakeSerialTransport.connect_error = None
+        FakeSerialTransport.initial_coils = {}
+        FakeSerialTransport.initial_discrete_inputs = {}
+        FakeSerialTransport.initial_holding_registers = {}
+        FakeSerialTransport.initial_unavailable_devices = set()
+        self.original_transport = integration.PymodbusSerialTransport
+        integration.PymodbusSerialTransport = FakeSerialTransport
+
+    def tearDown(self) -> None:
+        integration.PymodbusSerialTransport = self.original_transport
+
+    async def test_setup_creates_press_events_only_for_supported_firmware(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(32, firmware_version="1.24.0"),
+                "subentry-33": _device_subentry(33, firmware_version="1.16.9"),
+            }
+        )
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state(
+                        press_counts={
+                            (input_number, event_type): 0
+                            for input_number in modbus.INPUTS
+                            for event_type in integration.PRESS_EVENT_TYPES
+                        }
+                    ),
+                    33: _device_state(),
+                }
+            ),
+            clients={32: object(), 33: object()},
+            device_metadata={
+                32: _metadata(supports_press_counters=True),
+                33: _metadata(
+                    firmware_version="1.16.9",
+                    supports_press_counters=False,
+                ),
+            },
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await event_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(len(add_calls), 1)
+        self.assertEqual(len(add_calls[0][0]), 28)
+        self.assertEqual(add_calls[0][1]["config_subentry_id"], "subentry-32")
+        unique_ids = [entity.unique_id for entity in add_calls[0][0]]
+        self.assertIn("/dev/ttyUSB0:32:input_1_press_short", unique_ids)
+        self.assertIn(
+            "/dev/ttyUSB0:32:input_0_press_short_then_long",
+            unique_ids,
+        )
+        self.assertEqual(len(set(unique_ids)), 28)
+        self.assertEqual(add_calls[0][0][0].event_types, ["short"])
+
+    async def test_counter_increment_fires_correct_event_entity_only(self) -> None:
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={"subentry-32": _device_subentry(32, firmware_version="1.24.0")},
+        )
+        await integration.async_setup_entry(_hass(), entry)
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await event_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+        entities = add_calls[0][0]
+        short_entity = next(
+            entity
+            for entity in entities
+            if entity.unique_id == "/dev/ttyUSB0:32:input_1_press_short"
+        )
+        long_entity = next(
+            entity
+            for entity in entities
+            if entity.unique_id == "/dev/ttyUSB0:32:input_1_press_long"
+        )
+        transport = FakeSerialTransport.instances[0]
+        transport.calls.clear()
+
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            1,
+            device_id=32,
+        )
+        await entry.runtime_data.coordinator.async_request_refresh()
+        calls_after_refresh = list(transport.calls)
+        short_entity._handle_coordinator_update()
+        long_entity._handle_coordinator_update()
+
+        self.assertEqual(
+            short_entity.triggered_events,
+            [
+                (
+                    "short",
+                    {"device_id": 32, "input": 1, "counter": 1, "delta": 1},
+                )
+            ],
+        )
+        self.assertFalse(hasattr(long_entity, "triggered_events"))
+        self.assertEqual(transport.calls, calls_after_refresh)
+
+    async def test_event_entity_available_only_when_counter_data_present(self) -> None:
+        entity, coordinator = _input_press_event(
+            press_counts={(1, "short"): 0},
+        )
+
+        self.assertTrue(entity.available)
+
+        coordinator.data = {}
+        self.assertFalse(entity.available)
+
+        coordinator.data = {32: _device_state(press_counts={(1, "long"): 0})}
+        self.assertFalse(entity.available)
+
+    async def test_event_entity_does_not_refire_stale_event(self) -> None:
+        entity, coordinator = _input_press_event(
+            press_counts={(1, "short"): 1},
+        )
+        coordinator.press_events[(32, 1, "short")] = integration.WBMR6CPressEvent(
+            device_id=32,
+            input_number=1,
+            event_type="short",
+            counter=1,
+            delta=1,
+            sequence=1,
+        )
+
+        entity._handle_coordinator_update()
+        entity._handle_coordinator_update()
+
+        self.assertEqual(
+            entity.triggered_events,
+            [
+                (
+                    "short",
+                    {"device_id": 32, "input": 1, "counter": 1, "delta": 1},
+                )
+            ],
+        )
 
 
 class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
