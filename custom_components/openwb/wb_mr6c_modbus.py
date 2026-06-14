@@ -26,6 +26,8 @@ MAPPING_MATRIX_ROW_SPACING = 8
 REGISTER_U16_MAX = 0xFFFF
 PRESS_COUNTER_MODULO = REGISTER_U16_MAX + 1
 WBMR6C_MODEL = "WBMR6C"
+WBMR6CU_MODEL = "WBMR6CU"
+SUPPORTED_MODELS = frozenset((WBMR6C_MODEL, WBMR6CU_MODEL))
 
 COIL_RELAY_COMMAND_BASE = 0
 COIL_RELAY_OFF_COMMAND_BASE = 100
@@ -55,6 +57,7 @@ REG_INPUT_MODE_BASE = 9
 REG_INPUT_DEBOUNCE_MS_BASE = 20
 REG_MODEL_BASE = 200
 REG_MODEL_LENGTH = 6
+REG_MODEL_MAX_LENGTH = 20
 REG_FIRMWARE_VERSION_BASE = 250
 REG_FIRMWARE_VERSION_MAX_LENGTH = 16
 REG_SAFE_STATE_BASE = 930
@@ -560,9 +563,14 @@ class WBMR6CModbus:
 
     async def read_model(self) -> str:
         """Read and decode the device model string."""
-        values = await self.transport.read_holding_registers(
-            REG_MODEL_BASE, REG_MODEL_LENGTH, self.device_id
-        )
+        try:
+            values = await self.transport.read_holding_registers(
+                REG_MODEL_BASE, REG_MODEL_MAX_LENGTH, self.device_id
+            )
+        except WBMR6CModbusResponseError:
+            values = await self.transport.read_holding_registers(
+                REG_MODEL_BASE, REG_MODEL_LENGTH, self.device_id
+            )
         return decode_model_registers(values)
 
     async def read_firmware_version(self) -> str:
@@ -1005,7 +1013,7 @@ def decode_model_registers(registers: Sequence[int]) -> str:
     """Decode the model string from holding register 200."""
     if len(registers) < REG_MODEL_LENGTH:
         raise WBMR6CModbusResponseError("Not enough model registers returned")
-    return _decode_ascii_registers(registers[:REG_MODEL_LENGTH])
+    return _decode_ascii_registers(registers[:REG_MODEL_MAX_LENGTH])
 
 
 def decode_firmware_registers(registers: Sequence[int]) -> str:

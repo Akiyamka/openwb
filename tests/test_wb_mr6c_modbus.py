@@ -313,10 +313,19 @@ class AddressingTest(unittest.TestCase):
 class IdentificationTest(unittest.TestCase):
     def test_decode_model_and_firmware(self) -> None:
         model_registers = [ord(char) for char in "WBMR6C"]
+        extended_model_registers = [ord(char) for char in "WBMR6CU"] + [0]
         firmware_registers = [ord(char) for char in "1.24.0"] + [0] * 10
 
         self.assertEqual(
             wb_mr6c_modbus.decode_model_registers(model_registers), "WBMR6C"
+        )
+        self.assertEqual(
+            wb_mr6c_modbus.decode_model_registers(extended_model_registers),
+            "WBMR6CU",
+        )
+        self.assertEqual(
+            wb_mr6c_modbus.SUPPORTED_MODELS,
+            frozenset(("WBMR6C", "WBMR6CU")),
         )
         self.assertEqual(
             wb_mr6c_modbus.decode_firmware_registers(firmware_registers), "1.24.0"
@@ -743,7 +752,7 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_read_model_and_firmware(self) -> None:
         transport = FakeTransport()
-        for offset, char in enumerate("WBMR6C"):
+        for offset, char in enumerate("WBMR6CU"):
             transport.holding_registers[200 + offset] = ord(char)
         for offset, char in enumerate("1.24.0"):
             transport.holding_registers[250 + offset] = ord(char)
@@ -751,8 +760,17 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
 
         client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
 
-        self.assertEqual(await client.read_model(), "WBMR6C")
+        self.assertEqual(await client.read_model(), "WBMR6CU")
         self.assertEqual(await client.read_firmware_version(), "1.24.0")
+        self.assertIn(
+            (
+                "read_holding_registers",
+                wb_mr6c_modbus.REG_MODEL_BASE,
+                wb_mr6c_modbus.REG_MODEL_MAX_LENGTH,
+                32,
+            ),
+            transport.calls,
+        )
 
     async def test_read_firmware_rejects_short_response(self) -> None:
         transport = ShortHoldingRegisterTransport([ord("1"), 0])

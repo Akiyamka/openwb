@@ -26,6 +26,7 @@ from .const import (
     DEFAULT_STOPBITS,
     DOMAIN,
     MODEL_WB_MR6C_V2,
+    MODEL_WB_MR6CU_V2,
     PARITY_VALUES,
     STOPBITS_VALUES,
     SUBENTRY_TYPE_DEVICE,
@@ -33,11 +34,18 @@ from .const import (
 from .wb_mr6c_modbus import (
     ModbusTransport,
     PymodbusSerialTransport,
+    SUPPORTED_MODELS,
     WBMR6C_MODEL,
+    WBMR6CU_MODEL,
     WBMR6CModbus,
     WBMR6CModbusConnectionError,
     WBMR6CModbusResponseError,
 )
+
+_MODEL_CONFIG_VALUES = {
+    WBMR6C_MODEL: MODEL_WB_MR6C_V2,
+    WBMR6CU_MODEL: MODEL_WB_MR6CU_V2,
+}
 
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -146,14 +154,14 @@ class OpenWBDeviceSubentryFlow(config_entries.ConfigSubentryFlow):
                     )
                     if error is not None:
                         errors["base"] = error
-                    elif model != WBMR6C_MODEL:
+                    elif model not in SUPPORTED_MODELS:
                         errors["base"] = "unexpected_model"
                     else:
                         return self.async_create_entry(
                             title=f"Modbus module {device_id}",
                             data={
                                 CONF_DEVICE_ID: device_id,
-                                CONF_MODEL: MODEL_WB_MR6C_V2,
+                                CONF_MODEL: _MODEL_CONFIG_VALUES[model],
                                 CONF_FIRMWARE_VERSION: firmware_version,
                             },
                             unique_id=_device_subentry_unique_id(

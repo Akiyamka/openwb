@@ -24,6 +24,8 @@ from .const import (
     CONF_SERIAL_PORT,
     CONF_STOPBITS,
     DOMAIN,
+    MODEL_WB_MR6C_V2,
+    MODEL_WB_MR6CU_V2,
     SUBENTRY_TYPE_DEVICE,
     PARITY_VALUES,
     STOPBITS_VALUES,
@@ -32,6 +34,8 @@ from .wb_mr6c_modbus import (
     PressCounterEvent,
     ModbusTransport,
     PymodbusSerialTransport,
+    WBMR6C_MODEL,
+    WBMR6CU_MODEL,
     WBMR6CModbus,
     WBMR6CModbusConnectionError,
     WBMR6CModbusError,
@@ -80,7 +84,9 @@ class WBMR6CDeviceMetadata:
 
     model: str | None
     firmware_version: str | None
+    supports_inputs: bool
     supports_press_counters: bool
+    supports_mapping_matrix: bool
     supports_relay_state_discrete_inputs: bool
 
 
@@ -417,7 +423,11 @@ async def _async_device_metadata(
     return WBMR6CDeviceMetadata(
         model=model,
         firmware_version=firmware_version,
-        supports_press_counters=_supports_press_counters(firmware_version),
+        supports_inputs=_supports_inputs(model),
+        supports_press_counters=(
+            _supports_inputs(model) and _supports_press_counters(firmware_version)
+        ),
+        supports_mapping_matrix=_supports_mapping_matrix(model),
         supports_relay_state_discrete_inputs=(
             _supports_relay_state_discrete_inputs(firmware_version)
         ),
@@ -436,7 +446,9 @@ async def _async_read_device_state(
             for input_number, count in counter_values.items():
                 press_counts[(input_number, _PRESS_COUNTER_EVENT_TYPES[event])] = count
 
-    input_states = await client.read_input_states()
+    input_states = (
+        await client.read_input_states() if metadata.supports_inputs else {}
+    )
     relay_commands = await client.read_relay_commands()
 
     if metadata.supports_relay_state_discrete_inputs:
@@ -481,9 +493,48 @@ def _supports_relay_state_discrete_inputs(firmware_version: str | None) -> bool:
         return False
 
 
+def _supports_inputs(model: str | None) -> bool:
+    """Return whether the model has physical inputs."""
+    return _device_model_key(model) != MODEL_WB_MR6CU_V2
+
+
+def _supports_mapping_matrix(model: str | None) -> bool:
+    """Return whether the model supports input-to-output mapping matrices."""
+    return _supports_inputs(model)
+
+
+def device_model_display_name(model: str | None) -> str:
+    """Return a Home Assistant device-info model name."""
+    model_key = _device_model_key(model)
+    if model_key == MODEL_WB_MR6CU_V2:
+        return "WB-MR6CU v.2"
+    if model_key == MODEL_WB_MR6C_V2:
+        return "WB-MR6C v.2"
+    return model or "WB-MR6C v.2"
+
+
+def device_name(model: str | None, device_id: int) -> str:
+    """Return a Home Assistant device display name."""
+    model_key = _device_model_key(model)
+    if model_key == MODEL_WB_MR6CU_V2:
+        return f"WB-MR6CU {device_id}"
+    return f"WB-MR6C {device_id}"
+
+
+def _device_model_key(model: str | None) -> str | None:
+    """Normalize raw Modbus model strings and stored config values."""
+    if model in {WBMR6CU_MODEL, MODEL_WB_MR6CU_V2}:
+        return MODEL_WB_MR6CU_V2
+    if model in {WBMR6C_MODEL, MODEL_WB_MR6C_V2}:
+        return MODEL_WB_MR6C_V2
+    return None
+
+
 _UNKNOWN_DEVICE_METADATA = WBMR6CDeviceMetadata(
     model=None,
     firmware_version=None,
+    supports_inputs=True,
     supports_press_counters=False,
+    supports_mapping_matrix=True,
     supports_relay_state_discrete_inputs=False,
 )

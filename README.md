@@ -6,8 +6,14 @@ Open Source Home Assistant integration with wirenboard modules in HACS format.
 
 Under development, not ready for production
 
+Supported modules:
+
+- WB-MR6C v.2
+- WB-MR6CU v.2
+
 ## Modbus Documentation
 
+- [WB-MR6CU v.2](https://wiki.wirenboard.com/wiki/WB-MR6CU_v.2_Modbus_Relay_Modules)
 - [Relay Module Modbus Management](https://wiki.wirenboard.com/wiki/Relay_Module_Modbus_Management)
 - [I/O Mapping Matrix](https://wiki.wirenboard.com/wiki/I/O_Mapping_Matrix)
 

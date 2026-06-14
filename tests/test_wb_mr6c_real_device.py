@@ -216,7 +216,7 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
         if config is None:
             raise unittest.SkipTest(
                 "Set OPENWB_REAL_DEVICE_TESTS=1 and OPENWB_SERIAL_PORT to run "
-                "WB-MR6C real-device smoke tests"
+                "openWB real-device smoke tests"
             )
 
         try:
@@ -240,24 +240,27 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
             device_id=self.config.device_id,
         )
         relay_states: dict[int, bool] | None = None
+        input_states: dict[int, bool] | None = None
 
         try:
             model = await client.read_model()
             firmware = await client.read_firmware_version()
             firmware_tuple = wb_mr6c_modbus.parse_firmware_version(firmware)
             relay_commands = await client.read_relay_commands()
-            input_states = await client.read_input_states()
 
             self.assertTrue(model, "Model register returned an empty string")
-            self.assertEqual(
+            self.assertIn(
                 model,
-                "WBMR6C",
-                f"Expected WB-MR6C model identity, got {model!r}",
+                wb_mr6c_modbus.SUPPORTED_MODELS,
+                f"Expected supported openWB model identity, got {model!r}",
             )
             self.assertTrue(firmware, "Firmware register returned an empty string")
             self.assertEqual(len(firmware_tuple), 3)
             self._assert_channel_bool_map(relay_commands)
-            self._assert_input_bool_map(input_states)
+
+            if model == wb_mr6c_modbus.WBMR6C_MODEL:
+                input_states = await client.read_input_states()
+                self._assert_input_bool_map(input_states)
 
             if wb_mr6c_modbus.firmware_supports_relay_state_discrete_inputs(
                 firmware_tuple
@@ -269,7 +272,7 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         relay_state_report = relay_states if relay_states is not None else "not read"
         print(
-            "WB-MR6C real-device smoke result: "
+            "openWB real-device smoke result: "
             f"port={self.config.port!r}, device_id={self.config.device_id}, "
             f"model={model!r}, firmware={firmware!r}, "
             f"relay_commands={relay_commands}, input_states={input_states}, "

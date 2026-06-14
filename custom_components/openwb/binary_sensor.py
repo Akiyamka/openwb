@@ -9,7 +9,13 @@ from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import OpenWBConfigEntry, WBMR6CDeviceMetadata, WBMR6CDeviceState
+from . import (
+    OpenWBConfigEntry,
+    WBMR6CDeviceMetadata,
+    WBMR6CDeviceState,
+    device_model_display_name,
+    device_name,
+)
 from . import _device_id_from_subentry_data
 from .const import CONF_SERIAL_PORT, DOMAIN, SUBENTRY_TYPE_DEVICE
 from .wb_mr6c_modbus import INPUTS
@@ -35,6 +41,13 @@ async def async_setup_entry(
             continue
 
         metadata = entry.runtime_data.device_metadata.get(device_id)
+        if metadata is not None and not metadata.supports_inputs:
+            _LOGGER.debug(
+                "Skipping openWB input binary sensors for device %s without inputs",
+                device_id,
+            )
+            continue
+
         entities = [
             OpenWBInputBinarySensor(
                 entry=entry,
@@ -73,8 +86,10 @@ class OpenWBInputBinarySensor(CoordinatorEntity, BinarySensorEntity):
         self._attr_device_info = {
             "identifiers": {(DOMAIN, device_identifier)},
             "manufacturer": "Wiren Board",
-            "model": metadata.model if metadata and metadata.model else "WB-MR6C v.2",
-            "name": f"WB-MR6C {device_id}",
+            "model": device_model_display_name(
+                metadata.model if metadata else None
+            ),
+            "name": device_name(metadata.model if metadata else None, device_id),
         }
         if metadata and metadata.firmware_version:
             self._attr_device_info["sw_version"] = metadata.firmware_version

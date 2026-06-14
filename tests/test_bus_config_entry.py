@@ -601,7 +601,7 @@ def _set_device_identification(
         transport,
         device_id=device_id,
         base_address=modbus.REG_MODEL_BASE,
-        length=modbus.REG_MODEL_LENGTH,
+        length=modbus.REG_MODEL_MAX_LENGTH,
         value=model,
     )
     _set_ascii_registers(
@@ -626,7 +626,7 @@ def _seed_serial_identification(
         seed,
         device_id=device_id,
         base_address=modbus.REG_MODEL_BASE,
-        length=modbus.REG_MODEL_LENGTH,
+        length=modbus.REG_MODEL_MAX_LENGTH,
         value=model,
     )
     _set_ascii_registers(
@@ -890,7 +890,12 @@ class DeviceSubentryFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             transport.calls,
             [
-                ("read_holding_registers", modbus.REG_MODEL_BASE, 6, 32),
+                (
+                    "read_holding_registers",
+                    modbus.REG_MODEL_BASE,
+                    modbus.REG_MODEL_MAX_LENGTH,
+                    32,
+                ),
                 (
                     "read_holding_registers",
                     modbus.REG_FIRMWARE_VERSION_BASE,
@@ -898,6 +903,27 @@ class DeviceSubentryFlowTest(unittest.IsolatedAsyncioTestCase):
                     32,
                 ),
             ],
+        )
+
+    async def test_device_subentry_accepts_wb_mr6cu(self) -> None:
+        transport = FakeDeviceTransport()
+        _set_device_identification(
+            transport,
+            device_id=32,
+            model=modbus.WBMR6CU_MODEL,
+        )
+        flow = _device_flow(_bus_entry(transport=transport))
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(
+            result["data"],
+            {
+                const.CONF_DEVICE_ID: 32,
+                const.CONF_MODEL: const.MODEL_WB_MR6CU_V2,
+                const.CONF_FIRMWARE_VERSION: "1.24.0",
+            },
         )
 
     async def test_invalid_device_id_returns_form_error(self) -> None:
@@ -1079,14 +1105,24 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             transport.calls,
             [
-                ("read_holding_registers", modbus.REG_MODEL_BASE, 6, 32),
+                (
+                    "read_holding_registers",
+                    modbus.REG_MODEL_BASE,
+                    modbus.REG_MODEL_MAX_LENGTH,
+                    32,
+                ),
                 (
                     "read_holding_registers",
                     modbus.REG_FIRMWARE_VERSION_BASE,
                     16,
                     32,
                 ),
-                ("read_holding_registers", modbus.REG_MODEL_BASE, 6, 33),
+                (
+                    "read_holding_registers",
+                    modbus.REG_MODEL_BASE,
+                    modbus.REG_MODEL_MAX_LENGTH,
+                    33,
+                ),
                 (
                     "read_holding_registers",
                     modbus.REG_FIRMWARE_VERSION_BASE,
@@ -1119,6 +1155,60 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata.firmware_version, "1.24.0")
         self.assertTrue(metadata.supports_press_counters)
         self.assertTrue(metadata.supports_relay_state_discrete_inputs)
+
+    async def test_wb_mr6cu_setup_skips_input_polling(self) -> None:
+        _seed_serial_identification(
+            device_id=32,
+            model=modbus.WBMR6CU_MODEL,
+            firmware_version="1.24.0",
+        )
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={
+                "device-32": _device_subentry(
+                    32,
+                    firmware_version="1.24.0",
+                    model=const.MODEL_WB_MR6CU_V2,
+                )
+            },
+        )
+
+        await integration.async_setup_entry(_hass(), entry)
+
+        metadata = entry.runtime_data.device_metadata[32]
+        self.assertEqual(metadata.model, modbus.WBMR6CU_MODEL)
+        self.assertFalse(metadata.supports_inputs)
+        self.assertFalse(metadata.supports_press_counters)
+        self.assertFalse(metadata.supports_mapping_matrix)
+        self.assertTrue(metadata.supports_relay_state_discrete_inputs)
+
+        state = entry.runtime_data.coordinator.data[32]
+        self.assertEqual(state.input_states, {})
+        self.assertEqual(state.press_counts, {})
+        self.assertEqual(
+            FakeSerialTransport.instances[0].calls,
+            [
+                (
+                    "read_holding_registers",
+                    modbus.REG_MODEL_BASE,
+                    modbus.REG_MODEL_MAX_LENGTH,
+                    32,
+                ),
+                (
+                    "read_holding_registers",
+                    modbus.REG_FIRMWARE_VERSION_BASE,
+                    16,
+                    32,
+                ),
+                ("read_coils", modbus.COIL_RELAY_COMMAND_BASE, 6, 32),
+                ("read_discrete_inputs", modbus.DISCRETE_RELAY_STATE_BASE, 6, 32),
+            ],
+        )
 
     async def test_coordinator_omits_failed_device_and_keeps_other_devices(
         self,
@@ -1505,13 +1595,17 @@ def _metadata(
     *,
     model: str | None = "WBMR6C",
     firmware_version: str | None = "1.24.0",
+    supports_inputs: bool = True,
     supports_press_counters: bool = True,
+    supports_mapping_matrix: bool = True,
     supports_relay_state_discrete_inputs: bool = True,
 ) -> integration.WBMR6CDeviceMetadata:
     return integration.WBMR6CDeviceMetadata(
         model=model,
         firmware_version=firmware_version,
+        supports_inputs=supports_inputs,
         supports_press_counters=supports_press_counters,
+        supports_mapping_matrix=supports_mapping_matrix,
         supports_relay_state_discrete_inputs=supports_relay_state_discrete_inputs,
     )
 
@@ -1685,6 +1779,51 @@ class BinarySensorPlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/dev/ttyUSB0:33:input_6", unique_ids)
         self.assertEqual(len(set(unique_ids)), 14)
 
+    async def test_setup_skips_input_sensors_for_wb_mr6cu(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(32),
+                "subentry-33": _device_subentry(
+                    33,
+                    model=const.MODEL_WB_MR6CU_V2,
+                ),
+            }
+        )
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state(
+                        input_states={
+                            input_number: False for input_number in modbus.INPUTS
+                        }
+                    ),
+                    33: _device_state(),
+                }
+            ),
+            clients={32: object(), 33: object()},
+            device_metadata={
+                32: _metadata(),
+                33: _metadata(
+                    model=modbus.WBMR6CU_MODEL,
+                    supports_inputs=False,
+                    supports_press_counters=False,
+                    supports_mapping_matrix=False,
+                ),
+            },
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await binary_sensor_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(len(add_calls), 1)
+        self.assertEqual(add_calls[0][1]["config_subentry_id"], "subentry-32")
+        self.assertEqual(len(add_calls[0][0]), 7)
+
     async def test_is_on_reads_coordinator_input_state_without_io(self) -> None:
         entity, coordinator = _input_binary_sensor(
             input_number=2,
@@ -1774,6 +1913,54 @@ class EventPlatformTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(set(unique_ids)), 28)
         self.assertEqual(add_calls[0][0][0].event_types, ["short"])
+
+    async def test_setup_skips_press_events_for_wb_mr6cu(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(32, firmware_version="1.24.0"),
+                "subentry-33": _device_subentry(
+                    33,
+                    firmware_version="1.24.0",
+                    model=const.MODEL_WB_MR6CU_V2,
+                ),
+            }
+        )
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state(
+                        press_counts={
+                            (input_number, event_type): 0
+                            for input_number in modbus.INPUTS
+                            for event_type in integration.PRESS_EVENT_TYPES
+                        }
+                    ),
+                    33: _device_state(),
+                }
+            ),
+            clients={32: object(), 33: object()},
+            device_metadata={
+                32: _metadata(supports_press_counters=True),
+                33: _metadata(
+                    model=modbus.WBMR6CU_MODEL,
+                    supports_inputs=False,
+                    supports_press_counters=False,
+                    supports_mapping_matrix=False,
+                ),
+            },
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await event_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(len(add_calls), 1)
+        self.assertEqual(add_calls[0][1]["config_subentry_id"], "subentry-32")
+        self.assertEqual(len(add_calls[0][0]), 28)
 
     async def test_counter_increment_fires_correct_event_entity_only(self) -> None:
         entry = StubConfigEntry(
@@ -1915,11 +2102,47 @@ class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
             {
                 "identifiers": {(const.DOMAIN, "/dev/ttyUSB0:32")},
                 "manufacturer": "Wiren Board",
-                "model": "WBMR6C",
+                "model": "WB-MR6C v.2",
                 "name": "WB-MR6C 32",
                 "sw_version": "1.24.0",
             },
         )
+
+    async def test_wb_mr6cu_device_info_uses_relay_only_model_name(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(
+                    32,
+                    model=const.MODEL_WB_MR6CU_V2,
+                )
+            }
+        )
+        client = FakeRelayClient()
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {32: _device_state({output: False for output in modbus.OUTPUTS})}
+            ),
+            clients={32: client},
+            device_metadata={
+                32: _metadata(
+                    model=modbus.WBMR6CU_MODEL,
+                    supports_inputs=False,
+                    supports_press_counters=False,
+                    supports_mapping_matrix=False,
+                )
+            },
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await switch_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(add_calls[0][0][0].device_info["model"], "WB-MR6CU v.2")
+        self.assertEqual(add_calls[0][0][0].device_info["name"], "WB-MR6CU 32")
 
     async def test_is_on_reads_coordinator_data_without_client_io(self) -> None:
         entity, client, _coordinator = _relay_switch(
