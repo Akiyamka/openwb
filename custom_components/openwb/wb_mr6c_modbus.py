@@ -1,4 +1,4 @@
-"""Modbus backend for Wiren Board WB-MR6C v.2."""
+"""Modbus backend for supported Wiren Board Modbus modules."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ CHANNELS = tuple(range(1, CHANNEL_COUNT + 1))
 INPUT_0 = 0
 INPUTS = (1, 2, 3, 4, 5, 6, 0)
 OUTPUTS = CHANNELS
+MCM8_INPUT_COUNT = 8
+MCM8_INPUTS = tuple(range(1, MCM8_INPUT_COUNT + 1))
 MAPPING_MATRIX_ROW_SPACING = 8
 REGISTER_U16_MAX = 0xFFFF
 PRESS_COUNTER_MODULO = REGISTER_U16_MAX + 1
@@ -29,8 +31,17 @@ WBMR6C_MODEL = "WBMR6C"
 MR6C_MODEL = "MR6C"
 WBMR6CU_MODEL = "WBMR6CU"
 MR6CU_MODEL = "MR6CU"
+WBMCM8_MODEL = "WBMCM8"
+MCM8_MODEL = "MCM8"
 SUPPORTED_MODELS = frozenset(
-    (WBMR6C_MODEL, MR6C_MODEL, WBMR6CU_MODEL, MR6CU_MODEL)
+    (
+        WBMR6C_MODEL,
+        MR6C_MODEL,
+        WBMR6CU_MODEL,
+        MR6CU_MODEL,
+        WBMCM8_MODEL,
+        MCM8_MODEL,
+    )
 )
 
 COIL_RELAY_COMMAND_BASE = 0
@@ -71,6 +82,7 @@ REG_LONG_PRESS_MS_BASE = 1100
 REG_SECOND_PRESS_WAIT_MS_BASE = 1140
 
 MIN_FIRMWARE_PRESS_COUNTERS = (1, 17, 0)
+MIN_FIRMWARE_MCM8_PRESS_COUNTERS = (1, 3, 2)
 MIN_FIRMWARE_RELAY_STATE_DISCRETE_INPUTS = (1, 24, 0)
 MIN_FIRMWARE_RELAY_ONE_SHOT_COMMANDS = (1, 26, 0)
 
@@ -196,6 +208,11 @@ class ModbusTransport(Protocol):
     ) -> Sequence[int]:
         """Read holding register values."""
 
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[int]:
+        """Read input register values."""
+
     async def write_register(self, address: int, value: int, device_id: int) -> None:
         """Write a single holding register."""
 
@@ -263,6 +280,15 @@ class _PymodbusTransportAdapter:
         """Read holding register values."""
         response = await self._execute(
             "read_holding_registers", address, count=count, device_id=device_id
+        )
+        return _extract_registers(response, count)
+
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[int]:
+        """Read input register values."""
+        response = await self._execute(
+            "read_input_registers", address, count=count, device_id=device_id
         )
         return _extract_registers(response, count)
 
@@ -381,6 +407,7 @@ class FakeModbusTransport:
         self.coils: dict[tuple[int, int], bool] = {}
         self.discrete_inputs: dict[tuple[int, int], bool] = {}
         self.holding_registers: dict[tuple[int, int], int] = {}
+        self.input_registers: dict[tuple[int, int], int] = {}
         self.calls: list[tuple[str, int, int | bool, int]] = []
         self.writes: list[tuple[str, int, int | bool, int]] = []
         self.unavailable_devices = set(unavailable_devices or ())
@@ -414,6 +441,13 @@ class FakeModbusTransport:
         """Set a fake holding register value."""
         _validate_register_value(value)
         self.holding_registers[(device_id, address)] = value
+
+    def set_input_register(
+        self, address: int, value: int, device_id: int = DEFAULT_DEVICE_ID
+    ) -> None:
+        """Set a fake input register value."""
+        _validate_register_value(value)
+        self.input_registers[(device_id, address)] = value
 
     async def read_coils(
         self, address: int, count: int, device_id: int
@@ -454,6 +488,18 @@ class FakeModbusTransport:
         self._check_device(device_id)
         values = [
             self.holding_registers.get((device_id, address + offset), 0)
+            for offset in range(count)
+        ]
+        return self._maybe_short_response(values, device_id)
+
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[int]:
+        """Read fake input register values."""
+        self.calls.append(("read_input_registers", address, count, device_id))
+        self._check_device(device_id)
+        values = [
+            self.input_registers.get((device_id, address + offset), 0)
             for offset in range(count)
         ]
         return self._maybe_short_response(values, device_id)
@@ -529,24 +575,43 @@ class WBMR6CModbus:
         )
         return _channel_bool_map(values)
 
-    async def read_input_states(self) -> dict[int, bool]:
-        """Read input states for inputs 1..6 and 0."""
+    async def read_input_states(
+        self, input_numbers: Iterable[int] = INPUTS
+    ) -> dict[int, bool]:
+        """Read input states for the requested input numbers."""
+        input_numbers_tuple = tuple(input_numbers)
+        if not input_numbers_tuple:
+            return {}
+
         values = await self.transport.read_discrete_inputs(
             DISCRETE_INPUT_STATE_BASE, 8, self.device_id
         )
         if len(values) < 8:
             raise WBMR6CModbusResponseError("Not enough input values returned")
         return {
-            input_number: bool(values[_input_index(input_number)])
-            for input_number in INPUTS
+            input_number: bool(values[_input_state_index(input_number)])
+            for input_number in input_numbers_tuple
         }
 
     async def read_press_counters(
-        self, event: PressCounterEvent | int
+        self,
+        event: PressCounterEvent | int,
+        input_numbers: Iterable[int] = INPUTS,
+        *,
+        input_registers: bool = False,
     ) -> dict[int, int]:
         """Read press counters for one counter group."""
         counter_event = _validate_press_counter_event(event)
+        input_numbers_tuple = tuple(input_numbers)
+        if not input_numbers_tuple:
+            return {}
+
         if counter_event is PressCounterEvent.ACTIVATION:
+            if input_registers:
+                raise InvalidWBMR6CAddressError(
+                    "Activation counters from input-register-only devices are not "
+                    "exposed by read_press_counters"
+                )
             values = await self.transport.read_holding_registers(
                 int(counter_event), CHANNEL_COUNT, self.device_id
             )
@@ -556,36 +621,65 @@ class WBMR6CModbus:
                 )
             return {channel: int(values[channel - 1]) for channel in CHANNELS}
 
-        values = await self.transport.read_holding_registers(
+        read_registers = (
+            self.transport.read_input_registers
+            if input_registers
+            else self.transport.read_holding_registers
+        )
+        values = await read_registers(
             int(counter_event), MAPPING_MATRIX_ROW_SPACING, self.device_id
         )
         if len(values) < MAPPING_MATRIX_ROW_SPACING:
             raise WBMR6CModbusResponseError("Not enough press counter values returned")
         return {
-            input_number: int(values[_input_index(input_number)])
-            for input_number in INPUTS
+            input_number: int(values[_input_state_index(input_number)])
+            for input_number in input_numbers_tuple
         }
 
     async def read_model(self) -> str:
         """Read and decode the device model string."""
-        try:
-            values = await self.transport.read_holding_registers(
-                REG_MODEL_BASE, REG_MODEL_MAX_LENGTH, self.device_id
-            )
-        except WBMR6CModbusResponseError:
-            values = await self.transport.read_holding_registers(
-                REG_MODEL_BASE, REG_MODEL_LENGTH, self.device_id
-            )
-        return decode_model_registers(values)
+        return await self._read_ascii_registers(
+            REG_MODEL_BASE,
+            REG_MODEL_MAX_LENGTH,
+            decode_model_registers,
+            fallback_count=REG_MODEL_LENGTH,
+        )
 
     async def read_firmware_version(self) -> str:
         """Read and decode the firmware version string."""
-        values = await self.transport.read_holding_registers(
+        return await self._read_ascii_registers(
             REG_FIRMWARE_VERSION_BASE,
             REG_FIRMWARE_VERSION_MAX_LENGTH,
-            self.device_id,
+            decode_firmware_registers,
         )
-        return decode_firmware_registers(values)
+
+    async def _read_ascii_registers(
+        self,
+        address: int,
+        count: int,
+        decoder: Callable[[Sequence[int]], str],
+        *,
+        fallback_count: int | None = None,
+    ) -> str:
+        counts = (count,) if fallback_count is None else (count, fallback_count)
+        last_error: WBMR6CModbusResponseError | None = None
+
+        for read_registers in (
+            self.transport.read_holding_registers,
+            self.transport.read_input_registers,
+        ):
+            for current_count in counts:
+                try:
+                    return decoder(
+                        await read_registers(address, current_count, self.device_id)
+                    )
+                except WBMR6CModbusResponseError as err:
+                    last_error = err
+                    continue
+
+        if last_error is not None:
+            raise last_error
+        return ""
 
     async def read_snapshot(self) -> WBMR6CRelaySnapshot:
         """Read relay commands, actual relay states, and input states."""
@@ -901,8 +995,8 @@ def relay_state_discrete_input_address(output: int) -> int:
 
 
 def input_level_discrete_input_address(input_number: int) -> int:
-    """Return the input-level discrete input address for input 1..6 or 0."""
-    return DISCRETE_INPUT_LEVEL_BASE + _input_index(input_number)
+    """Return the input-level discrete input address for input 1..8 or 0."""
+    return DISCRETE_INPUT_LEVEL_BASE + _input_state_index(input_number)
 
 
 def input_register_address(base_address: int, input_number: int) -> int:
@@ -1058,6 +1152,13 @@ def firmware_supports_press_counters(
     return _firmware_version_tuple(version) >= MIN_FIRMWARE_PRESS_COUNTERS
 
 
+def firmware_supports_mcm8_press_counters(
+    version: str | Sequence[int],
+) -> bool:
+    """Return whether WB-MCM8 firmware supports per-press input counters."""
+    return _firmware_version_tuple(version) >= MIN_FIRMWARE_MCM8_PRESS_COUNTERS
+
+
 def firmware_supports_relay_state_discrete_inputs(
     version: str | Sequence[int],
 ) -> bool:
@@ -1159,6 +1260,16 @@ def _input_index(input_number: int) -> int:
         return 7
     raise InvalidWBMR6CAddressError(
         f"Invalid WB-MR6C input {input_number}; expected 1..6 or 0"
+    )
+
+
+def _input_state_index(input_number: int) -> int:
+    if _is_int_value(input_number) and input_number in range(1, MCM8_INPUT_COUNT + 1):
+        return input_number - 1
+    if _is_int_value(input_number) and input_number == INPUT_0:
+        return 7
+    raise InvalidWBMR6CAddressError(
+        f"Invalid WB input {input_number}; expected 1..8 or 0"
     )
 
 

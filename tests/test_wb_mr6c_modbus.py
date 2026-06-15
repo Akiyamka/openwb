@@ -26,6 +26,7 @@ class FakeTransport:
         self.coils: dict[int, bool] = {}
         self.discrete_inputs: dict[int, bool] = {}
         self.holding_registers: dict[int, int] = {}
+        self.input_registers: dict[int, int] = {}
         self.calls: list[tuple[str, int, int | bool, int]] = []
 
     async def read_coils(
@@ -56,6 +57,15 @@ class FakeTransport:
             for offset in range(count)
         ]
 
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> list[int]:
+        self.calls.append(("read_input_registers", address, count, device_id))
+        return [
+            self.input_registers.get(address + offset, 0)
+            for offset in range(count)
+        ]
+
     async def write_register(self, address: int, value: int, device_id: int) -> None:
         self.holding_registers[address] = value
         self.calls.append(("write_register", address, value, device_id))
@@ -70,6 +80,19 @@ class ShortHoldingRegisterTransport(FakeTransport):
         self, address: int, count: int, device_id: int
     ) -> list[int]:
         return self.values
+
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> list[int]:
+        return self.values
+
+
+class HoldingRegisterErrorTransport(FakeTransport):
+    async def read_holding_registers(
+        self, address: int, count: int, device_id: int
+    ) -> list[int]:
+        self.calls.append(("read_holding_registers", address, count, device_id))
+        raise wb_mr6c_modbus.WBMR6CModbusResponseError("holding read failed")
 
 
 class StubPymodbusResponse:
@@ -142,6 +165,13 @@ class StubPymodbusClient:
             "read_holding_registers", address, count, device_id
         )
 
+    async def read_input_registers(
+        self, address: int, *, count: int = 1, device_id: int = 1
+    ) -> StubPymodbusResponse:
+        return await self._respond(
+            "read_input_registers", address, count, device_id
+        )
+
     async def write_register(
         self, address: int, value: int, *, device_id: int = 1
     ) -> StubPymodbusResponse:
@@ -162,7 +192,7 @@ class StubPymodbusClient:
                 return self.responses.pop(0)
             if method in {"read_coils", "read_discrete_inputs"}:
                 return StubPymodbusResponse(bits=[False] * int(args[1]))
-            if method == "read_holding_registers":
+            if method in {"read_holding_registers", "read_input_registers"}:
                 return StubPymodbusResponse(registers=[0] * int(args[1]))
             return StubPymodbusResponse()
         finally:
@@ -190,7 +220,7 @@ class ManifestTest(unittest.TestCase):
         manifest_path = MODULE_PATH.parent / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
 
-        self.assertEqual(manifest["version"], "0.9.2")
+        self.assertEqual(manifest["version"], "0.9.3")
 
 
 class AddressingTest(unittest.TestCase):
@@ -198,6 +228,7 @@ class AddressingTest(unittest.TestCase):
         self.assertEqual(wb_mr6c_modbus.RELAY_COUNT, 6)
         self.assertEqual(wb_mr6c_modbus.INPUT_CHANNEL_COUNT, 6)
         self.assertEqual(wb_mr6c_modbus.INPUTS, (1, 2, 3, 4, 5, 6, 0))
+        self.assertEqual(wb_mr6c_modbus.MCM8_INPUTS, (1, 2, 3, 4, 5, 6, 7, 8))
 
     def test_relay_channel_address(self) -> None:
         self.assertEqual(
@@ -217,6 +248,7 @@ class AddressingTest(unittest.TestCase):
         self.assertEqual(wb_mr6c_modbus.relay_state_discrete_input_address(6), 101)
         self.assertEqual(wb_mr6c_modbus.input_level_discrete_input_address(1), 0)
         self.assertEqual(wb_mr6c_modbus.input_level_discrete_input_address(6), 5)
+        self.assertEqual(wb_mr6c_modbus.input_level_discrete_input_address(8), 7)
         self.assertEqual(wb_mr6c_modbus.input_level_discrete_input_address(0), 7)
 
     def test_input_zero_address(self) -> None:
@@ -315,6 +347,7 @@ class IdentificationTest(unittest.TestCase):
         model_registers = [ord(char) for char in "WBMR6C"]
         extended_model_registers = [ord(char) for char in "WBMR6CU"] + [0]
         compact_model_registers = [ord(char) for char in "MR6CU"] + [0]
+        mcm8_model_registers = [ord(char) for char in "MCM8"] + [0, 0]
         firmware_registers = [ord(char) for char in "1.24.0"] + [0] * 10
 
         self.assertEqual(
@@ -329,8 +362,12 @@ class IdentificationTest(unittest.TestCase):
             "MR6CU",
         )
         self.assertEqual(
+            wb_mr6c_modbus.decode_model_registers(mcm8_model_registers),
+            "MCM8",
+        )
+        self.assertEqual(
             wb_mr6c_modbus.SUPPORTED_MODELS,
-            frozenset(("WBMR6C", "MR6C", "WBMR6CU", "MR6CU")),
+            frozenset(("WBMR6C", "MR6C", "WBMR6CU", "MR6CU", "WBMCM8", "MCM8")),
         )
         self.assertEqual(
             wb_mr6c_modbus.decode_firmware_registers(firmware_registers), "1.24.0"
@@ -348,6 +385,12 @@ class IdentificationTest(unittest.TestCase):
         )
         self.assertFalse(wb_mr6c_modbus.firmware_supports_press_counters("1.16.9"))
         self.assertTrue(wb_mr6c_modbus.firmware_supports_press_counters("1.17.0"))
+        self.assertFalse(
+            wb_mr6c_modbus.firmware_supports_mcm8_press_counters("1.3.1")
+        )
+        self.assertTrue(
+            wb_mr6c_modbus.firmware_supports_mcm8_press_counters("1.3.2")
+        )
         self.assertFalse(
             wb_mr6c_modbus.firmware_supports_relay_state_discrete_inputs("1.23.9")
         )
@@ -405,12 +448,14 @@ class PymodbusSerialTransportTest(unittest.IsolatedAsyncioTestCase):
         client.queue_response(StubPymodbusResponse(bits=[True, False, True]))
         client.queue_response(StubPymodbusResponse(bits=[False, True]))
         client.queue_response(StubPymodbusResponse(registers=[12, 34]))
+        client.queue_response(StubPymodbusResponse(registers=[56, 78]))
 
         self.assertEqual(await transport.read_coils(10, 3, 32), [True, False, True])
         self.assertEqual(
             await transport.read_discrete_inputs(20, 2, 32), [False, True]
         )
         self.assertEqual(await transport.read_holding_registers(30, 2, 32), [12, 34])
+        self.assertEqual(await transport.read_input_registers(35, 2, 32), [56, 78])
 
         await transport.write_coil(40, True, 32)
         await transport.write_register(50, 65535, 32)
@@ -418,6 +463,7 @@ class PymodbusSerialTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("read_coils", 10, 3, 32), client.calls)
         self.assertIn(("read_discrete_inputs", 20, 2, 32), client.calls)
         self.assertIn(("read_holding_registers", 30, 2, 32), client.calls)
+        self.assertIn(("read_input_registers", 35, 2, 32), client.calls)
         self.assertIn(("write_coil", 40, True, 32), client.calls)
         self.assertIn(("write_register", 50, 65535, 32), client.calls)
 
@@ -469,6 +515,10 @@ class PymodbusSerialTransportTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
             await transport.read_holding_registers(0, 2, 1)
 
+        client.queue_response(StubPymodbusResponse(registers=[1]))
+        with self.assertRaises(wb_mr6c_modbus.WBMR6CModbusResponseError):
+            await transport.read_input_registers(0, 2, 1)
+
     async def test_serial_transport_validates_register_values(self) -> None:
         client = StubPymodbusClient()
         client.connected = True
@@ -489,12 +539,14 @@ class FakeModbusTransportTest(unittest.IsolatedAsyncioTestCase):
         transport.set_coil(0, False, device_id=33)
         transport.set_discrete_input(7, True, device_id=32)
         transport.set_holding_register(200, 123, device_id=32)
+        transport.set_input_register(250, 789, device_id=32)
 
         self.assertTrue(transport.connected)
         self.assertEqual(await transport.read_coils(0, 1, 32), [True])
         self.assertEqual(await transport.read_coils(0, 1, 33), [False])
         self.assertEqual(await transport.read_discrete_inputs(7, 1, 32), [True])
         self.assertEqual(await transport.read_holding_registers(200, 1, 32), [123])
+        self.assertEqual(await transport.read_input_registers(250, 1, 32), [789])
 
         await transport.write_coil(1, True, 32)
         await transport.write_register(201, 456, 32)
@@ -755,6 +807,36 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(short[1], 11)
         self.assertEqual(short[0], 70)
 
+    async def test_read_mcm8_inputs_and_input_register_press_counters(self) -> None:
+        transport = FakeTransport()
+        transport.discrete_inputs[7] = True
+        transport.input_registers[464] = 11
+        transport.input_registers[471] = 80
+
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+        input_states = await client.read_input_states(wb_mr6c_modbus.MCM8_INPUTS)
+        short = await client.read_press_counters(
+            wb_mr6c_modbus.PressCounterEvent.SHORT,
+            wb_mr6c_modbus.MCM8_INPUTS,
+            input_registers=True,
+        )
+
+        self.assertFalse(input_states[1])
+        self.assertTrue(input_states[8])
+        self.assertNotIn(0, input_states)
+        self.assertEqual(short[1], 11)
+        self.assertEqual(short[8], 80)
+        self.assertNotIn(0, short)
+        self.assertIn(
+            (
+                "read_input_registers",
+                wb_mr6c_modbus.REG_PRESS_COUNTER_SHORT_BASE,
+                8,
+                32,
+            ),
+            transport.calls,
+        )
+
     async def test_read_model_and_firmware(self) -> None:
         transport = FakeTransport()
         for offset, char in enumerate("WBMR6CU"):
@@ -772,6 +854,36 @@ class WBMR6CModbusTest(unittest.IsolatedAsyncioTestCase):
                 "read_holding_registers",
                 wb_mr6c_modbus.REG_MODEL_BASE,
                 wb_mr6c_modbus.REG_MODEL_MAX_LENGTH,
+                32,
+            ),
+            transport.calls,
+        )
+
+    async def test_read_model_and_firmware_fallback_to_input_registers(self) -> None:
+        transport = HoldingRegisterErrorTransport()
+        for offset, char in enumerate("MCM8"):
+            transport.input_registers[200 + offset] = ord(char)
+        for offset, char in enumerate("1.3.2"):
+            transport.input_registers[250 + offset] = ord(char)
+
+        client = wb_mr6c_modbus.WBMR6CModbus(transport, device_id=32)
+
+        self.assertEqual(await client.read_model(), "MCM8")
+        self.assertEqual(await client.read_firmware_version(), "1.3.2")
+        self.assertIn(
+            (
+                "read_input_registers",
+                wb_mr6c_modbus.REG_MODEL_BASE,
+                wb_mr6c_modbus.REG_MODEL_MAX_LENGTH,
+                32,
+            ),
+            transport.calls,
+        )
+        self.assertIn(
+            (
+                "read_input_registers",
+                wb_mr6c_modbus.REG_FIRMWARE_VERSION_BASE,
+                wb_mr6c_modbus.REG_FIRMWARE_VERSION_MAX_LENGTH,
                 32,
             ),
             transport.calls,

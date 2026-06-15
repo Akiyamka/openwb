@@ -13,6 +13,7 @@ CONF_STOPBITS = "stopbits"
 
 MODEL_WB_MR6C_V2 = "wb_mr6c_v2"
 MODEL_WB_MR6CU_V2 = "wb_mr6cu_v2"
+MODEL_WB_MCM8 = "wb_mcm8"
 SUBENTRY_TYPE_DEVICE = "device"
 
 DEFAULT_BAUDRATE = 9600

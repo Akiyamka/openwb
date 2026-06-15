@@ -24,6 +24,7 @@ from .const import (
     CONF_SERIAL_PORT,
     CONF_STOPBITS,
     DOMAIN,
+    MODEL_WB_MCM8,
     MODEL_WB_MR6C_V2,
     MODEL_WB_MR6CU_V2,
     SUBENTRY_TYPE_DEVICE,
@@ -31,16 +32,22 @@ from .const import (
     STOPBITS_VALUES,
 )
 from .wb_mr6c_modbus import (
+    INPUTS,
+    MCM8_INPUTS,
+    MCM8_MODEL,
     MR6C_MODEL,
     MR6CU_MODEL,
+    OUTPUTS,
     PressCounterEvent,
     ModbusTransport,
     PymodbusSerialTransport,
     WBMR6C_MODEL,
     WBMR6CU_MODEL,
+    WBMCM8_MODEL,
     WBMR6CModbus,
     WBMR6CModbusConnectionError,
     WBMR6CModbusError,
+    firmware_supports_mcm8_press_counters,
     firmware_supports_relay_one_shot_commands,
     firmware_supports_press_counters,
     firmware_supports_relay_state_discrete_inputs,
@@ -92,6 +99,9 @@ class WBMR6CDeviceMetadata:
     supports_mapping_matrix: bool
     supports_relay_one_shot_commands: bool
     supports_relay_state_discrete_inputs: bool
+    input_numbers: tuple[int, ...]
+    output_numbers: tuple[int, ...]
+    press_counter_input_registers: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,20 +434,29 @@ async def _async_device_metadata(
     model = model or stored_model
     firmware_version = firmware_version or stored_firmware_version
 
+    input_numbers = _device_input_numbers(model)
+    output_numbers = _device_output_numbers(model)
+
     return WBMR6CDeviceMetadata(
         model=model,
         firmware_version=firmware_version,
-        supports_inputs=_supports_inputs(model),
+        supports_inputs=bool(input_numbers),
         supports_press_counters=(
-            _supports_inputs(model) and _supports_press_counters(firmware_version)
+            bool(input_numbers)
+            and _supports_press_counters(model, firmware_version)
         ),
         supports_mapping_matrix=_supports_mapping_matrix(model),
         supports_relay_one_shot_commands=(
-            _supports_relay_one_shot_commands(firmware_version)
+            bool(output_numbers)
+            and _supports_relay_one_shot_commands(firmware_version)
         ),
         supports_relay_state_discrete_inputs=(
-            _supports_relay_state_discrete_inputs(firmware_version)
+            bool(output_numbers)
+            and _supports_relay_state_discrete_inputs(firmware_version)
         ),
+        input_numbers=input_numbers,
+        output_numbers=output_numbers,
+        press_counter_input_registers=_press_counter_input_registers(model),
     )
 
 
@@ -449,14 +468,22 @@ async def _async_read_device_state(
     press_counts: dict[tuple[int, str], int] = {}
     if metadata.supports_press_counters:
         for event in _PRESS_COUNTER_EVENTS:
-            counter_values = await client.read_press_counters(event)
+            counter_values = await client.read_press_counters(
+                event,
+                metadata.input_numbers,
+                input_registers=metadata.press_counter_input_registers,
+            )
             for input_number, count in counter_values.items():
                 press_counts[(input_number, _PRESS_COUNTER_EVENT_TYPES[event])] = count
 
     input_states = (
-        await client.read_input_states() if metadata.supports_inputs else {}
+        await client.read_input_states(metadata.input_numbers)
+        if metadata.supports_inputs
+        else {}
     )
-    relay_commands = await client.read_relay_commands()
+    relay_commands = (
+        await client.read_relay_commands() if metadata.output_numbers else {}
+    )
 
     if metadata.supports_relay_state_discrete_inputs:
         relay_states = await client.read_relay_states()
@@ -480,11 +507,13 @@ def _non_empty_string(value: Any) -> str | None:
     return None
 
 
-def _supports_press_counters(firmware_version: str | None) -> bool:
+def _supports_press_counters(model: str | None, firmware_version: str | None) -> bool:
     """Return whether firmware metadata enables press-counter polling."""
     if firmware_version is None:
         return False
     try:
+        if _device_model_key(model) == MODEL_WB_MCM8:
+            return firmware_supports_mcm8_press_counters(firmware_version)
         return firmware_supports_press_counters(firmware_version)
     except ValueError:
         return False
@@ -512,17 +541,41 @@ def _supports_relay_one_shot_commands(firmware_version: str | None) -> bool:
 
 def _supports_inputs(model: str | None) -> bool:
     """Return whether the model has physical inputs."""
-    return _device_model_key(model) != MODEL_WB_MR6CU_V2
+    return bool(_device_input_numbers(model))
 
 
 def _supports_mapping_matrix(model: str | None) -> bool:
     """Return whether the model supports input-to-output mapping matrices."""
-    return _supports_inputs(model)
+    return _device_model_key(model) in {None, MODEL_WB_MR6C_V2}
+
+
+def _device_input_numbers(model: str | None) -> tuple[int, ...]:
+    """Return input numbers exposed by the model."""
+    model_key = _device_model_key(model)
+    if model_key == MODEL_WB_MR6CU_V2:
+        return ()
+    if model_key == MODEL_WB_MCM8:
+        return MCM8_INPUTS
+    return INPUTS
+
+
+def _device_output_numbers(model: str | None) -> tuple[int, ...]:
+    """Return relay output numbers exposed by the model."""
+    if _device_model_key(model) == MODEL_WB_MCM8:
+        return ()
+    return OUTPUTS
+
+
+def _press_counter_input_registers(model: str | None) -> bool:
+    """Return whether press counters must be read from input registers."""
+    return _device_model_key(model) == MODEL_WB_MCM8
 
 
 def device_model_display_name(model: str | None) -> str:
     """Return a Home Assistant device-info model name."""
     model_key = _device_model_key(model)
+    if model_key == MODEL_WB_MCM8:
+        return "WB-MCM8"
     if model_key == MODEL_WB_MR6CU_V2:
         return "WB-MR6CU v.2"
     if model_key == MODEL_WB_MR6C_V2:
@@ -533,6 +586,8 @@ def device_model_display_name(model: str | None) -> str:
 def device_name(model: str | None, device_id: int) -> str:
     """Return a Home Assistant device display name."""
     model_key = _device_model_key(model)
+    if model_key == MODEL_WB_MCM8:
+        return f"WB-MCM8 {device_id}"
     if model_key == MODEL_WB_MR6CU_V2:
         return f"WB-MR6CU {device_id}"
     return f"WB-MR6C {device_id}"
@@ -540,6 +595,8 @@ def device_name(model: str | None, device_id: int) -> str:
 
 def _device_model_key(model: str | None) -> str | None:
     """Normalize raw Modbus model strings and stored config values."""
+    if model in {WBMCM8_MODEL, MCM8_MODEL, MODEL_WB_MCM8}:
+        return MODEL_WB_MCM8
     if model in {WBMR6CU_MODEL, MR6CU_MODEL, MODEL_WB_MR6CU_V2}:
         return MODEL_WB_MR6CU_V2
     if model in {WBMR6C_MODEL, MR6C_MODEL, MODEL_WB_MR6C_V2}:
@@ -555,4 +612,7 @@ _UNKNOWN_DEVICE_METADATA = WBMR6CDeviceMetadata(
     supports_mapping_matrix=True,
     supports_relay_one_shot_commands=False,
     supports_relay_state_discrete_inputs=False,
+    input_numbers=INPUTS,
+    output_numbers=OUTPUTS,
+    press_counter_input_registers=False,
 )

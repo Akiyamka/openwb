@@ -239,6 +239,7 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
             transport,
             device_id=self.config.device_id,
         )
+        relay_commands: dict[int, bool] | None = None
         relay_states: dict[int, bool] | None = None
         input_states: dict[int, bool] | None = None
 
@@ -246,7 +247,6 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
             model = await client.read_model()
             firmware = await client.read_firmware_version()
             firmware_tuple = wb_mr6c_modbus.parse_firmware_version(firmware)
-            relay_commands = await client.read_relay_commands()
 
             self.assertTrue(model, "Model register returned an empty string")
             self.assertIn(
@@ -256,14 +256,30 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(firmware, "Firmware register returned an empty string")
             self.assertEqual(len(firmware_tuple), 3)
-            self._assert_channel_bool_map(relay_commands)
 
-            if model == wb_mr6c_modbus.WBMR6C_MODEL:
-                input_states = await client.read_input_states()
-                self._assert_input_bool_map(input_states)
+            if model not in {
+                wb_mr6c_modbus.WBMCM8_MODEL,
+                wb_mr6c_modbus.MCM8_MODEL,
+            }:
+                relay_commands = await client.read_relay_commands()
+                self._assert_channel_bool_map(relay_commands)
 
-            if wb_mr6c_modbus.firmware_supports_relay_state_discrete_inputs(
-                firmware_tuple
+            if model in {wb_mr6c_modbus.WBMR6C_MODEL, wb_mr6c_modbus.MR6C_MODEL}:
+                input_states = await client.read_input_states(wb_mr6c_modbus.INPUTS)
+                self._assert_input_bool_map(input_states, wb_mr6c_modbus.INPUTS)
+            elif model in {
+                wb_mr6c_modbus.WBMCM8_MODEL,
+                wb_mr6c_modbus.MCM8_MODEL,
+            }:
+                input_states = await client.read_input_states(
+                    wb_mr6c_modbus.MCM8_INPUTS
+                )
+                self._assert_input_bool_map(input_states, wb_mr6c_modbus.MCM8_INPUTS)
+
+            if relay_commands is not None and (
+                wb_mr6c_modbus.firmware_supports_relay_state_discrete_inputs(
+                    firmware_tuple
+                )
             ):
                 relay_states = await client.read_relay_states()
                 self._assert_channel_bool_map(relay_states)
@@ -293,8 +309,10 @@ class WBMR6CRealDeviceSmokeTest(unittest.IsolatedAsyncioTestCase):
         for value in values.values():
             self.assertIsInstance(value, bool)
 
-    def _assert_input_bool_map(self, values: dict[int, bool]) -> None:
-        self.assertEqual(set(values), set(wb_mr6c_modbus.INPUTS))
+    def _assert_input_bool_map(
+        self, values: dict[int, bool], expected_inputs: tuple[int, ...]
+    ) -> None:
+        self.assertEqual(set(values), set(expected_inputs))
         for value in values.values():
             self.assertIsInstance(value, bool)
 

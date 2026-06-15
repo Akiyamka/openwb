@@ -25,6 +25,7 @@ from .const import (
     DEFAULT_PARITY,
     DEFAULT_STOPBITS,
     DOMAIN,
+    MODEL_WB_MCM8,
     MODEL_WB_MR6C_V2,
     MODEL_WB_MR6CU_V2,
     PARITY_VALUES,
@@ -32,6 +33,7 @@ from .const import (
     SUBENTRY_TYPE_DEVICE,
 )
 from .wb_mr6c_modbus import (
+    MCM8_MODEL,
     MR6C_MODEL,
     MR6CU_MODEL,
     ModbusTransport,
@@ -39,6 +41,7 @@ from .wb_mr6c_modbus import (
     SUPPORTED_MODELS,
     WBMR6C_MODEL,
     WBMR6CU_MODEL,
+    WBMCM8_MODEL,
     WBMR6CModbus,
     WBMR6CModbusConnectionError,
     WBMR6CModbusResponseError,
@@ -49,6 +52,8 @@ _MODEL_CONFIG_VALUES = {
     MR6C_MODEL: MODEL_WB_MR6C_V2,
     WBMR6CU_MODEL: MODEL_WB_MR6CU_V2,
     MR6CU_MODEL: MODEL_WB_MR6CU_V2,
+    WBMCM8_MODEL: MODEL_WB_MCM8,
+    MCM8_MODEL: MODEL_WB_MCM8,
 }
 
 

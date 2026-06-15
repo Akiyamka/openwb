@@ -10,10 +10,13 @@ Supported modules:
 
 - WB-MR6C v.2
 - WB-MR6CU v.2
+- WB-MCM8
 
 ## Modbus Documentation
 
 - [WB-MR6CU v.2](https://wiki.wirenboard.com/wiki/WB-MR6CU_v.2_Modbus_Relay_Modules)
+- [WB-MCM8](https://wiki.wirenboard.com/wiki/WB-MCM8_Modbus_Count_Inputs)
+- [WB-MCM8 registers](https://wiki.wirenboard.com/wiki/MCM8_Registers)
 - [Relay Module Modbus Management](https://wiki.wirenboard.com/wiki/Relay_Module_Modbus_Management)
 - [I/O Mapping Matrix](https://wiki.wirenboard.com/wiki/I/O_Mapping_Matrix)
 

@@ -43,6 +43,14 @@ async def async_setup_entry(
             continue
 
         metadata = entry.runtime_data.device_metadata.get(device_id)
+        output_numbers = metadata.output_numbers if metadata is not None else OUTPUTS
+        if not output_numbers:
+            _LOGGER.debug(
+                "Skipping openWB switch entities for device %s without relay outputs",
+                device_id,
+            )
+            continue
+
         entities = [
             OpenWBRelaySwitch(
                 entry=entry,
@@ -52,7 +60,7 @@ async def async_setup_entry(
                 output=output,
                 metadata=metadata,
             )
-            for output in OUTPUTS
+            for output in output_numbers
         ]
         async_add_entities(entities, config_subentry_id=config_subentry_id)
 

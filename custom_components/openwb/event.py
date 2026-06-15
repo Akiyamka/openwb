@@ -43,7 +43,8 @@ async def async_setup_entry(
             continue
 
         metadata = entry.runtime_data.device_metadata.get(device_id)
-        if metadata is not None and not metadata.supports_inputs:
+        input_numbers = metadata.input_numbers if metadata is not None else INPUTS
+        if not input_numbers:
             _LOGGER.debug(
                 "Skipping openWB input press events for device %s without inputs",
                 device_id,
@@ -67,7 +68,7 @@ async def async_setup_entry(
                 event_type=event_type,
                 metadata=metadata,
             )
-            for input_number in INPUTS
+            for input_number in input_numbers
             for event_type in PRESS_EVENT_TYPES
         ]
         async_add_entities(entities, config_subentry_id=config_subentry_id)

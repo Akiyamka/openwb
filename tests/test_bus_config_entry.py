@@ -448,6 +448,7 @@ class FakeSerialTransport:
     initial_coils: dict[tuple[int, int], bool] = {}
     initial_discrete_inputs: dict[tuple[int, int], bool] = {}
     initial_holding_registers: dict[tuple[int, int], int] = {}
+    initial_input_registers: dict[tuple[int, int], int] = {}
     initial_unavailable_devices: set[int] = set()
 
     def __init__(
@@ -465,6 +466,7 @@ class FakeSerialTransport:
         self.coils = dict(FakeSerialTransport.initial_coils)
         self.discrete_inputs = dict(FakeSerialTransport.initial_discrete_inputs)
         self.holding_registers = dict(FakeSerialTransport.initial_holding_registers)
+        self.input_registers = dict(FakeSerialTransport.initial_input_registers)
         self.unavailable_devices = set(FakeSerialTransport.initial_unavailable_devices)
         self.response_error_devices: set[int] = set()
         self.calls: list[tuple[str, int, int | bool, int]] = []
@@ -490,6 +492,9 @@ class FakeSerialTransport:
 
     def set_holding_register(self, address: int, value: int, *, device_id: int) -> None:
         self.holding_registers[(device_id, address)] = value
+
+    def set_input_register(self, address: int, value: int, *, device_id: int) -> None:
+        self.input_registers[(device_id, address)] = value
 
     async def read_coils(
         self, address: int, count: int, device_id: int
@@ -526,6 +531,16 @@ class FakeSerialTransport:
             for offset in range(count)
         ]
 
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> list[int]:
+        self.calls.append(("read_input_registers", address, count, device_id))
+        self._check_device(device_id)
+        return [
+            self.input_registers.get((device_id, address + offset), 0)
+            for offset in range(count)
+        ]
+
     async def write_register(self, address: int, value: int, device_id: int) -> None:
         self.calls.append(("write_register", address, value, device_id))
         self._check_device(device_id)
@@ -547,6 +562,7 @@ class FakeDeviceTransport:
         self.args = args
         self.kwargs = kwargs
         self.holding_registers: dict[tuple[int, int], int] = {}
+        self.input_registers: dict[tuple[int, int], int] = {}
         self.calls: list[tuple[str, int, int, int]] = []
         self.connect_calls = 0
         self.close_calls = 0
@@ -573,6 +589,17 @@ class FakeDeviceTransport:
             for offset in range(count)
         ]
 
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> list[int]:
+        self.calls.append(("read_input_registers", address, count, device_id))
+        if self.read_error is not None:
+            raise self.read_error
+        return [
+            self.input_registers.get((device_id, address + offset), 0)
+            for offset in range(count)
+        ]
+
     async def read_coils(
         self, address: int, count: int, device_id: int
     ) -> list[bool]:
@@ -596,6 +623,7 @@ def _set_device_identification(
     device_id: int,
     model: str = "WBMR6C",
     firmware_version: str = "1.24.0",
+    input_registers: bool = False,
 ) -> None:
     _set_ascii_registers(
         transport,
@@ -603,6 +631,7 @@ def _set_device_identification(
         base_address=modbus.REG_MODEL_BASE,
         length=modbus.REG_MODEL_MAX_LENGTH,
         value=model,
+        input_registers=input_registers,
     )
     _set_ascii_registers(
         transport,
@@ -610,6 +639,7 @@ def _set_device_identification(
         base_address=modbus.REG_FIRMWARE_VERSION_BASE,
         length=modbus.REG_FIRMWARE_VERSION_MAX_LENGTH,
         value=firmware_version,
+        input_registers=input_registers,
     )
 
 
@@ -618,9 +648,11 @@ def _seed_serial_identification(
     device_id: int,
     model: str = "WBMR6C",
     firmware_version: str = "1.24.0",
+    input_registers: bool = False,
 ) -> None:
     seed = types.SimpleNamespace(
-        holding_registers=FakeSerialTransport.initial_holding_registers
+        holding_registers=FakeSerialTransport.initial_holding_registers,
+        input_registers=FakeSerialTransport.initial_input_registers,
     )
     _set_ascii_registers(
         seed,
@@ -628,6 +660,7 @@ def _seed_serial_identification(
         base_address=modbus.REG_MODEL_BASE,
         length=modbus.REG_MODEL_MAX_LENGTH,
         value=model,
+        input_registers=input_registers,
     )
     _set_ascii_registers(
         seed,
@@ -635,6 +668,7 @@ def _seed_serial_identification(
         base_address=modbus.REG_FIRMWARE_VERSION_BASE,
         length=modbus.REG_FIRMWARE_VERSION_MAX_LENGTH,
         value=firmware_version,
+        input_registers=input_registers,
     )
 
 
@@ -645,12 +679,14 @@ def _set_ascii_registers(
     base_address: int,
     length: int,
     value: str,
+    input_registers: bool = False,
 ) -> None:
+    registers = (
+        transport.input_registers if input_registers else transport.holding_registers
+    )
     for offset in range(length):
         register_value = ord(value[offset]) if offset < len(value) else 0
-        transport.holding_registers[(device_id, base_address + offset)] = (
-            register_value
-        )
+        registers[(device_id, base_address + offset)] = register_value
 
 
 def _bus_entry(
@@ -926,6 +962,28 @@ class DeviceSubentryFlowTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_device_subentry_accepts_mcm8_model_alias(self) -> None:
+        transport = FakeDeviceTransport()
+        _set_device_identification(
+            transport,
+            device_id=32,
+            model=modbus.MCM8_MODEL,
+            firmware_version="1.3.2",
+        )
+        flow = _device_flow(_bus_entry(transport=transport))
+
+        result = await flow.async_step_user({const.CONF_DEVICE_ID: "32"})
+
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(
+            result["data"],
+            {
+                const.CONF_DEVICE_ID: 32,
+                const.CONF_MODEL: const.MODEL_WB_MCM8,
+                const.CONF_FIRMWARE_VERSION: "1.3.2",
+            },
+        )
+
     async def test_invalid_device_id_returns_form_error(self) -> None:
         transport = FakeDeviceTransport()
         flow = _device_flow(_bus_entry(transport=transport))
@@ -1031,6 +1089,7 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
         FakeSerialTransport.initial_coils = {}
         FakeSerialTransport.initial_discrete_inputs = {}
         FakeSerialTransport.initial_holding_registers = {}
+        FakeSerialTransport.initial_input_registers = {}
         FakeSerialTransport.initial_unavailable_devices = set()
         self.original_transport = integration.PymodbusSerialTransport
         integration.PymodbusSerialTransport = FakeSerialTransport
@@ -1208,6 +1267,67 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
                 ("read_coils", modbus.COIL_RELAY_COMMAND_BASE, 6, 32),
                 ("read_discrete_inputs", modbus.DISCRETE_RELAY_STATE_BASE, 6, 32),
             ],
+        )
+
+    async def test_wb_mcm8_setup_reads_inputs_and_skips_relay_polling(self) -> None:
+        _seed_serial_identification(
+            device_id=32,
+            model=modbus.MCM8_MODEL,
+            firmware_version="1.3.2",
+        )
+        FakeSerialTransport.initial_discrete_inputs[(32, 7)] = True
+        FakeSerialTransport.initial_input_registers[
+            (32, modbus.REG_PRESS_COUNTER_SHORT_BASE + 7)
+        ] = 8
+        entry = StubConfigEntry(
+            {
+                const.CONF_SERIAL_PORT: "/dev/ttyUSB0",
+                const.CONF_BAUDRATE: 9600,
+                const.CONF_PARITY: "N",
+                const.CONF_STOPBITS: 2,
+            },
+            subentries={
+                "device-32": _device_subentry(
+                    32,
+                    firmware_version="1.3.2",
+                    model=const.MODEL_WB_MCM8,
+                )
+            },
+        )
+
+        await integration.async_setup_entry(_hass(), entry)
+
+        metadata = entry.runtime_data.device_metadata[32]
+        self.assertEqual(metadata.model, modbus.MCM8_MODEL)
+        self.assertEqual(metadata.input_numbers, modbus.MCM8_INPUTS)
+        self.assertEqual(metadata.output_numbers, ())
+        self.assertTrue(metadata.supports_inputs)
+        self.assertTrue(metadata.supports_press_counters)
+        self.assertFalse(metadata.supports_mapping_matrix)
+        self.assertFalse(metadata.supports_relay_one_shot_commands)
+        self.assertFalse(metadata.supports_relay_state_discrete_inputs)
+        self.assertTrue(metadata.press_counter_input_registers)
+
+        state = entry.runtime_data.coordinator.data[32]
+        self.assertTrue(state.input_states[8])
+        self.assertNotIn(0, state.input_states)
+        self.assertEqual(state.press_counts[(8, "short")], 8)
+        self.assertEqual(state.relay_commands, {})
+        self.assertEqual(state.relay_states, {})
+
+        calls = FakeSerialTransport.instances[0].calls
+        self.assertIn(
+            ("read_input_registers", modbus.REG_PRESS_COUNTER_SHORT_BASE, 8, 32),
+            calls,
+        )
+        self.assertIn(
+            ("read_discrete_inputs", modbus.DISCRETE_INPUT_STATE_BASE, 8, 32),
+            calls,
+        )
+        self.assertNotIn(("read_coils", modbus.COIL_RELAY_COMMAND_BASE, 6, 32), calls)
+        self.assertNotIn(
+            ("read_discrete_inputs", modbus.DISCRETE_RELAY_STATE_BASE, 6, 32),
+            calls,
         )
 
     async def test_coordinator_omits_failed_device_and_keeps_other_devices(
@@ -1605,7 +1725,23 @@ def _metadata(
     supports_mapping_matrix: bool = True,
     supports_relay_one_shot_commands: bool = False,
     supports_relay_state_discrete_inputs: bool = True,
+    input_numbers: tuple[int, ...] | None = None,
+    output_numbers: tuple[int, ...] | None = None,
+    press_counter_input_registers: bool = False,
 ) -> integration.WBMR6CDeviceMetadata:
+    if input_numbers is None:
+        if not supports_inputs:
+            input_numbers = ()
+        elif model in {modbus.MCM8_MODEL, modbus.WBMCM8_MODEL, const.MODEL_WB_MCM8}:
+            input_numbers = modbus.MCM8_INPUTS
+        else:
+            input_numbers = modbus.INPUTS
+    if output_numbers is None:
+        if model in {modbus.MCM8_MODEL, modbus.WBMCM8_MODEL, const.MODEL_WB_MCM8}:
+            output_numbers = ()
+        else:
+            output_numbers = modbus.OUTPUTS
+
     return integration.WBMR6CDeviceMetadata(
         model=model,
         firmware_version=firmware_version,
@@ -1614,6 +1750,9 @@ def _metadata(
         supports_mapping_matrix=supports_mapping_matrix,
         supports_relay_one_shot_commands=supports_relay_one_shot_commands,
         supports_relay_state_discrete_inputs=supports_relay_state_discrete_inputs,
+        input_numbers=input_numbers,
+        output_numbers=output_numbers,
+        press_counter_input_registers=press_counter_input_registers,
     )
 
 
@@ -1841,6 +1980,54 @@ class BinarySensorPlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(add_calls[0][1]["config_subentry_id"], "subentry-32")
         self.assertEqual(len(add_calls[0][0]), 7)
 
+    async def test_setup_creates_eight_input_sensors_for_wb_mcm8(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(
+                    32,
+                    firmware_version="1.3.2",
+                    model=const.MODEL_WB_MCM8,
+                )
+            }
+        )
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state(
+                        input_states={
+                            input_number: False
+                            for input_number in modbus.MCM8_INPUTS
+                        }
+                    )
+                }
+            ),
+            clients={32: object()},
+            device_metadata={
+                32: _metadata(
+                    model=modbus.MCM8_MODEL,
+                    firmware_version="1.3.2",
+                    supports_mapping_matrix=False,
+                    supports_relay_state_discrete_inputs=False,
+                )
+            },
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await binary_sensor_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(len(add_calls), 1)
+        self.assertEqual(len(add_calls[0][0]), 8)
+        unique_ids = [entity.unique_id for entity in add_calls[0][0]]
+        self.assertIn("/dev/ttyUSB0:32:input_8", unique_ids)
+        self.assertNotIn("/dev/ttyUSB0:32:input_0", unique_ids)
+        self.assertEqual(add_calls[0][0][0].device_info["model"], "WB-MCM8")
+        self.assertEqual(add_calls[0][0][0].device_info["name"], "WB-MCM8 32")
+
     async def test_is_on_reads_coordinator_input_state_without_io(self) -> None:
         entity, coordinator = _input_binary_sensor(
             input_number=2,
@@ -1874,6 +2061,7 @@ class EventPlatformTest(unittest.IsolatedAsyncioTestCase):
         FakeSerialTransport.initial_coils = {}
         FakeSerialTransport.initial_discrete_inputs = {}
         FakeSerialTransport.initial_holding_registers = {}
+        FakeSerialTransport.initial_input_registers = {}
         FakeSerialTransport.initial_unavailable_devices = set()
         self.original_transport = integration.PymodbusSerialTransport
         integration.PymodbusSerialTransport = FakeSerialTransport
@@ -1978,6 +2166,54 @@ class EventPlatformTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(add_calls), 1)
         self.assertEqual(add_calls[0][1]["config_subentry_id"], "subentry-32")
         self.assertEqual(len(add_calls[0][0]), 28)
+
+    async def test_setup_creates_press_events_for_wb_mcm8_inputs(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(
+                    32,
+                    firmware_version="1.3.2",
+                    model=const.MODEL_WB_MCM8,
+                )
+            }
+        )
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state(
+                        press_counts={
+                            (input_number, event_type): 0
+                            for input_number in modbus.MCM8_INPUTS
+                            for event_type in integration.PRESS_EVENT_TYPES
+                        }
+                    )
+                }
+            ),
+            clients={32: object()},
+            device_metadata={
+                32: _metadata(
+                    model=modbus.MCM8_MODEL,
+                    firmware_version="1.3.2",
+                    supports_mapping_matrix=False,
+                    supports_relay_state_discrete_inputs=False,
+                    press_counter_input_registers=True,
+                )
+            },
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await event_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(len(add_calls), 1)
+        self.assertEqual(len(add_calls[0][0]), 32)
+        unique_ids = [entity.unique_id for entity in add_calls[0][0]]
+        self.assertIn("/dev/ttyUSB0:32:input_8_press_short", unique_ids)
+        self.assertNotIn("/dev/ttyUSB0:32:input_0_press_short", unique_ids)
 
     async def test_counter_increment_fires_correct_event_entity_only(self) -> None:
         entry = StubConfigEntry(
@@ -2160,6 +2396,48 @@ class SwitchPlatformTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(add_calls[0][0][0].device_info["model"], "WB-MR6CU v.2")
         self.assertEqual(add_calls[0][0][0].device_info["name"], "WB-MR6CU 32")
+
+    async def test_setup_skips_relay_switches_for_wb_mcm8(self) -> None:
+        entry = _bus_entry(
+            subentries={
+                "subentry-32": _device_subentry(
+                    32,
+                    firmware_version="1.3.2",
+                    model=const.MODEL_WB_MCM8,
+                )
+            }
+        )
+        entry.runtime_data = types.SimpleNamespace(
+            coordinator=FakeSwitchCoordinator(
+                {
+                    32: _device_state(
+                        input_states={
+                            input_number: False
+                            for input_number in modbus.MCM8_INPUTS
+                        }
+                    )
+                }
+            ),
+            clients={32: FakeRelayClient()},
+            device_metadata={
+                32: _metadata(
+                    model=modbus.MCM8_MODEL,
+                    firmware_version="1.3.2",
+                    supports_mapping_matrix=False,
+                    supports_relay_state_discrete_inputs=False,
+                )
+            },
+        )
+        add_calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+        def async_add_entities(entities: list[Any], **kwargs: Any) -> None:
+            add_calls.append((entities, kwargs))
+
+        await switch_platform.async_setup_entry(
+            types.SimpleNamespace(), entry, async_add_entities
+        )
+
+        self.assertEqual(add_calls, [])
 
     async def test_is_on_reads_coordinator_data_without_client_io(self) -> None:
         entity, client, _coordinator = _relay_switch(
