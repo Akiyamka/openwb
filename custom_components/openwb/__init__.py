@@ -7,7 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
-from typing import Any, TypeGuard, override
+from typing import TypeGuard, override
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -293,7 +293,7 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     _ = await hass.config_entries.async_reload(entry.entry_id)
 
 
-def _bus_config_from_entry_data(data: Mapping[str, Any]) -> OpenWBBusConfig | None:
+def _bus_config_from_entry_data(data: Mapping[str, object]) -> OpenWBBusConfig | None:
     """Return validated bus config entry data, or None for unsupported entries."""
     serial_port = data.get(CONF_SERIAL_PORT)
     baudrate = data.get(CONF_BAUDRATE)
@@ -317,7 +317,7 @@ def _bus_config_from_entry_data(data: Mapping[str, Any]) -> OpenWBBusConfig | No
     )
 
 
-def _is_positive_int(value: Any) -> TypeGuard[int]:
+def _is_positive_int(value: object) -> TypeGuard[int]:
     """Return whether value is a positive integer, excluding bool."""
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
@@ -331,7 +331,7 @@ async def _async_device_clients_from_subentries(
     device_metadata: dict[int, WBMR6CDeviceMetadata] = {}
 
     for subentry_data in _device_subentry_data(entry):
-        device_id = _device_id_from_subentry_data(subentry_data)
+        device_id = device_id_from_subentry_data(subentry_data)
         if device_id is None:
             _LOGGER.warning(
                 "Skipping openWB device subentry with invalid device id: %s",
@@ -355,19 +355,17 @@ async def _async_device_clients_from_subentries(
     return clients, device_metadata
 
 
-def _device_subentry_data(entry: ConfigEntry) -> Iterable[Mapping[str, Any]]:
+def _device_subentry_data(entry: ConfigEntry) -> Iterable[Mapping[str, object]]:
     """Yield raw data for configured device subentries on a bus entry."""
-    for subentry in getattr(entry, "subentries", {}).values():
-        subentry_type = getattr(subentry, "subentry_type", SUBENTRY_TYPE_DEVICE)
-        if subentry_type != SUBENTRY_TYPE_DEVICE:
+    for subentry in entry.subentries.values():
+        if subentry.subentry_type != SUBENTRY_TYPE_DEVICE:
             continue
 
-        data = getattr(subentry, "data", {})
-        if isinstance(data, Mapping):
-            yield data
+        data: Mapping[str, object] = subentry.data
+        yield data
 
 
-def _device_id_from_subentry_data(data: Mapping[str, Any]) -> int | None:
+def device_id_from_subentry_data(data: Mapping[str, object]) -> int | None:
     """Return a valid Modbus device id from subentry data, if present."""
     device_id = data.get(CONF_DEVICE_ID)
     if (
@@ -381,7 +379,7 @@ def _device_id_from_subentry_data(data: Mapping[str, Any]) -> int | None:
 
 async def _async_device_metadata(
     client: OpenWBDeviceClient,
-    subentry_data: Mapping[str, Any],
+    subentry_data: Mapping[str, object],
 ) -> WBMR6CDeviceMetadata:
     """Read model and firmware metadata for one configured device."""
     stored_model = _non_empty_string(subentry_data.get(CONF_MODEL))
@@ -453,7 +451,7 @@ async def _async_read_device_state(
     )
 
 
-def _non_empty_string(value: Any) -> str | None:
+def _non_empty_string(value: object) -> str | None:
     """Return stripped non-empty strings only."""
     if isinstance(value, str):
         value = value.strip()

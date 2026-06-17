@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
+
+from ..wb_mr6c_modbus import ModbusTransport, PressCounterEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +50,7 @@ class OpenWBDeviceClient(Protocol):
 
     async def read_press_counters(
         self,
-        event: Any,
+        event: PressCounterEvent | int,
         input_numbers: Iterable[int],
         *,
         input_registers: bool = False,
@@ -88,7 +90,7 @@ class OpenWBDeviceClient(Protocol):
 
 
 FirmwareGate = Callable[[str], bool]
-DeviceClientFactory = Callable[[Any, int], OpenWBDeviceClient]
+DeviceClientFactory = Callable[[ModbusTransport, int], OpenWBDeviceClient]
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import suppress
-from typing import Any, override
+from typing import override
 
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers import selector
+from homeassistant.helpers.selector import (
+    SelectSelector,  # pyright: ignore[reportUnknownVariableType]
+    SelectSelectorConfig,
+    TextSelector,  # pyright: ignore[reportUnknownVariableType]
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     CONFIG_ENTRY_VERSION,
@@ -44,24 +51,18 @@ from .wb_mr6c_modbus import (
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_SERIAL_PORT): selector.TextSelector(),
+        vol.Required(CONF_SERIAL_PORT): TextSelector(),
         vol.Required(CONF_BAUDRATE, default=str(DEFAULT_BAUDRATE)): (
-            selector.TextSelector(
-                {
-                    "type": selector.TextSelectorType.NUMBER,
-                }
-            )
+            TextSelector(TextSelectorConfig(type=TextSelectorType.NUMBER))
         ),
-        vol.Required(CONF_PARITY, default=DEFAULT_PARITY): selector.SelectSelector(
-            {
-                "options": list(PARITY_VALUES),
-            }
+        vol.Required(CONF_PARITY, default=DEFAULT_PARITY): SelectSelector(
+            SelectSelectorConfig(options=list(PARITY_VALUES))
         ),
         vol.Required(CONF_STOPBITS, default=str(DEFAULT_STOPBITS)): (
-            selector.SelectSelector(
-                {
-                    "options": [str(value) for value in STOPBITS_VALUES],
-                }
+            SelectSelector(
+                SelectSelectorConfig(
+                    options=[str(value) for value in STOPBITS_VALUES]
+                )
             )
         ),
     }
@@ -69,10 +70,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 STEP_DEVICE_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_DEVICE_ID): selector.TextSelector(
-            {
-                "type": selector.TextSelectorType.NUMBER,
-            }
+        vol.Required(CONF_DEVICE_ID): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.NUMBER)
         )
     }
 )
@@ -94,7 +93,7 @@ class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @override
     async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
+        self, user_input: Mapping[str, object] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
@@ -126,7 +125,7 @@ class OpenWBDeviceSubentryFlow(config_entries.ConfigSubentryFlow):
     """Handle an openWB device subentry flow."""
 
     async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
+        self, user_input: Mapping[str, object] | None = None
     ) -> config_entries.SubentryFlowResult:
         """Handle manual device subentry setup."""
         errors: dict[str, str] = {}
@@ -177,7 +176,7 @@ class OpenWBDeviceSubentryFlow(config_entries.ConfigSubentryFlow):
 
 
 def _validate_bus_config(
-    user_input: dict[str, Any],
+    user_input: Mapping[str, object],
 ) -> tuple[dict[str, str | int], dict[str, str]]:
     """Validate and normalize serial bus configuration input."""
     errors: dict[str, str] = {}
@@ -292,10 +291,10 @@ def _has_device_id_subentry(
 ) -> bool:
     """Return whether the parent bus already has this Modbus device address."""
     unique_id = _device_subentry_unique_id(serial_port, device_id)
-    for subentry in getattr(entry, "subentries", {}).values():
-        if getattr(subentry, "unique_id", None) == unique_id:
+    for subentry in entry.subentries.values():
+        if subentry.unique_id == unique_id:
             return True
-        data = getattr(subentry, "data", {})
+        data: Mapping[str, object] = subentry.data
         if data.get(CONF_DEVICE_ID) == device_id:
             return True
 
@@ -307,7 +306,7 @@ def _device_subentry_unique_id(serial_port: str, device_id: int) -> str:
     return f"{serial_port}:{device_id}"
 
 
-def _parse_device_id(value: Any) -> int | None:
+def _parse_device_id(value: object) -> int | None:
     """Parse and validate a Modbus device id in the RTU slave range."""
     device_id = _parse_positive_int(value)
     if device_id is not None and 1 <= device_id <= 247:
@@ -315,7 +314,7 @@ def _parse_device_id(value: Any) -> int | None:
     return None
 
 
-def _parse_serial_port(value: Any) -> str | None:
+def _parse_serial_port(value: object) -> str | None:
     """Parse and validate a serial device path/name."""
     if not isinstance(value, str):
         return None
@@ -324,7 +323,7 @@ def _parse_serial_port(value: Any) -> str | None:
     return serial_port or None
 
 
-def _parse_positive_int(value: Any) -> int | None:
+def _parse_positive_int(value: object) -> int | None:
     """Parse and validate a positive integer form value."""
     if isinstance(value, bool):
         return None
@@ -344,7 +343,7 @@ def _parse_positive_int(value: Any) -> int | None:
     return None
 
 
-def _parse_parity(value: Any) -> str | None:
+def _parse_parity(value: object) -> str | None:
     """Parse and validate serial parity."""
     if not isinstance(value, str):
         return None
@@ -355,7 +354,7 @@ def _parse_parity(value: Any) -> str | None:
     return None
 
 
-def _parse_stopbits(value: Any) -> int | None:
+def _parse_stopbits(value: object) -> int | None:
     """Parse and validate serial stop bits."""
     stopbits = _parse_positive_int(value)
     if stopbits in STOPBITS_VALUES:

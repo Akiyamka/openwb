@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Protocol, TypeVar
+from typing import Protocol, TypeGuard, TypeVar, cast
 
 _ModbusValue = TypeVar("_ModbusValue", bool, int)
 
@@ -237,6 +237,29 @@ class ManagedModbusTransport(ModbusTransport, Protocol):
         ...
 
 
+class _ModbusResponse(Protocol):
+    """Minimal pymodbus response surface shared by all requests."""
+
+    def isError(self) -> bool:
+        """Return whether pymodbus marked the response as an error."""
+        ...
+
+
+class _BitModbusResponse(_ModbusResponse, Protocol):
+    """Pymodbus bit response with coil/discrete-input values."""
+
+    bits: Sequence[object]
+
+
+class _RegisterModbusResponse(_ModbusResponse, Protocol):
+    """Pymodbus register response with holding/input-register values."""
+
+    registers: Sequence[object]
+
+
+_ResponseT = TypeVar("_ResponseT", bound=_ModbusResponse)
+
+
 class _PymodbusClient(Protocol):
     """Minimal pymodbus client surface used by the transport adapter."""
 
@@ -245,12 +268,48 @@ class _PymodbusClient(Protocol):
         """Return whether the underlying pymodbus client is connected."""
         ...
 
-    async def connect(self) -> bool:
+    def connect(self) -> Awaitable[bool]:
         """Open the underlying pymodbus connection."""
         ...
 
     def close(self) -> None:
         """Close the underlying pymodbus connection."""
+        ...
+
+    def read_coils(
+        self, address: int, *, count: int, device_id: int
+    ) -> Awaitable[_BitModbusResponse]:
+        """Read coil values."""
+        ...
+
+    def write_coil(
+        self, address: int, value: bool, *, device_id: int
+    ) -> Awaitable[_ModbusResponse]:
+        """Write a single coil value."""
+        ...
+
+    def read_discrete_inputs(
+        self, address: int, *, count: int, device_id: int
+    ) -> Awaitable[_BitModbusResponse]:
+        """Read discrete input values."""
+        ...
+
+    def read_holding_registers(
+        self, address: int, *, count: int, device_id: int
+    ) -> Awaitable[_RegisterModbusResponse]:
+        """Read holding register values."""
+        ...
+
+    def read_input_registers(
+        self, address: int, *, count: int, device_id: int
+    ) -> Awaitable[_RegisterModbusResponse]:
+        """Read input register values."""
+        ...
+
+    def write_register(
+        self, address: int, value: int, *, device_id: int
+    ) -> Awaitable[_ModbusResponse]:
+        """Write a single holding register."""
         ...
 
 
@@ -294,20 +353,29 @@ class _PymodbusTransportAdapter:
     ) -> Sequence[bool]:
         """Read coil values."""
         response = await self._execute(
-            "read_coils", address, count=count, device_id=device_id
+            "read_coils",
+            lambda: self._client.read_coils(
+                address, count=count, device_id=device_id
+            ),
         )
         return _extract_bits(response, count)
 
     async def write_coil(self, address: int, value: bool, device_id: int) -> None:
         """Write a single coil value."""
-        await self._execute("write_coil", address, value, device_id=device_id)
+        _ = await self._execute(
+            "write_coil",
+            lambda: self._client.write_coil(address, value, device_id=device_id),
+        )
 
     async def read_discrete_inputs(
         self, address: int, count: int, device_id: int
     ) -> Sequence[bool]:
         """Read discrete input values."""
         response = await self._execute(
-            "read_discrete_inputs", address, count=count, device_id=device_id
+            "read_discrete_inputs",
+            lambda: self._client.read_discrete_inputs(
+                address, count=count, device_id=device_id
+            ),
         )
         return _extract_bits(response, count)
 
@@ -316,7 +384,10 @@ class _PymodbusTransportAdapter:
     ) -> Sequence[int]:
         """Read holding register values."""
         response = await self._execute(
-            "read_holding_registers", address, count=count, device_id=device_id
+            "read_holding_registers",
+            lambda: self._client.read_holding_registers(
+                address, count=count, device_id=device_id
+            ),
         )
         return _extract_registers(response, count)
 
@@ -325,36 +396,37 @@ class _PymodbusTransportAdapter:
     ) -> Sequence[int]:
         """Read input register values."""
         response = await self._execute(
-            "read_input_registers", address, count=count, device_id=device_id
+            "read_input_registers",
+            lambda: self._client.read_input_registers(
+                address, count=count, device_id=device_id
+            ),
         )
         return _extract_registers(response, count)
 
     async def write_register(self, address: int, value: int, device_id: int) -> None:
         """Write a single holding register."""
         _validate_register_value(value)
-        await self._execute("write_register", address, value, device_id=device_id)
+        _ = await self._execute(
+            "write_register",
+            lambda: self._client.write_register(address, value, device_id=device_id),
+        )
 
     async def _execute(
-        self, method_name: str, *args: Any, device_id: int, **kwargs: Any
-    ) -> Any:
+        self,
+        method_name: str,
+        request: Callable[[], Awaitable[_ResponseT]],
+    ) -> _ResponseT:
         async with self._lock:
             await self.connect()
 
             try:
-                method = getattr(self._client, method_name)
-                response = await method(*args, **kwargs, device_id=device_id)
+                response = await request()
             except Exception as err:  # noqa: BLE001
                 raise WBMR6CModbusConnectionError(
                     f"Modbus request failed: {method_name}"
                 ) from err
 
-            is_error = getattr(response, "isError", None)
-            response_is_error = (
-                is_error
-                if isinstance(is_error, bool)
-                else callable(is_error) and is_error()
-            )
-            if response is None or response_is_error:
+            if response.isError():
                 raise WBMR6CModbusResponseError(
                     f"Modbus request returned an error: {method_name}"
                 )
@@ -375,23 +447,27 @@ class PymodbusSerialTransport(_PymodbusTransportAdapter):
         stopbits: int = DEFAULT_SERIAL_STOPBITS,
         timeout: float = 3.0,
         retries: int = 3,
-        client_factory: Callable[..., Any] | None = None,
+        client_factory: Callable[..., object] | None = None,
     ) -> None:
         """Initialize the serial RTU transport."""
         try:
-            if client_factory is None:
+            factory = client_factory
+            if factory is None:
                 from pymodbus.client import AsyncModbusSerialClient
 
-                client_factory = AsyncModbusSerialClient
+                factory = AsyncModbusSerialClient
 
-            client = client_factory(
-                port,
-                baudrate=baudrate,
-                bytesize=bytesize,
-                parity=parity,
-                stopbits=stopbits,
-                timeout=timeout,
-                retries=retries,
+            client = cast(
+                _PymodbusClient,
+                factory(
+                    port,
+                    baudrate=baudrate,
+                    bytesize=bytesize,
+                    parity=parity,
+                    stopbits=stopbits,
+                    timeout=timeout,
+                    retries=retries,
+                ),
             )
         except Exception as err:  # noqa: BLE001
             raise WBMR6CModbusConnectionError(
@@ -416,11 +492,17 @@ class PymodbusTcpTransport(_PymodbusTransportAdapter):
         try:
             from pymodbus.client import AsyncModbusTcpClient
 
-            client = AsyncModbusTcpClient(
-                host,
-                port=port,
-                timeout=timeout,
-                retries=retries,
+            client = cast(
+                _PymodbusClient,
+                cast(
+                    object,
+                    AsyncModbusTcpClient(
+                        host,
+                        port=port,
+                        timeout=timeout,
+                        retries=retries,
+                    ),
+                ),
             )
         except Exception as err:  # noqa: BLE001
             raise WBMR6CModbusConnectionError(
@@ -1100,30 +1182,48 @@ def mapping_action_value(action: MappingAction | int) -> int:
 
 
 def _validate_mapping_matrix(
-    matrix: Mapping[tuple[int, int], MappingAction | int],
+    matrix: object,
 ) -> dict[tuple[int, int], int]:
     if not isinstance(matrix, Mapping):
         raise InvalidWBMR6CValueError("Mapping matrix must be a mapping")
 
+    matrix_data = cast(Mapping[object, object], matrix)
     expected_keys = {
         (input_number, output) for input_number in INPUTS for output in OUTPUTS
     }
     validated: dict[tuple[int, int], int] = {}
-    for key, action in matrix.items():
-        if not isinstance(key, tuple) or len(key) != 2:
+    for key, action in matrix_data.items():
+        if not isinstance(key, tuple):
             raise InvalidWBMR6CAddressError(
                 "Mapping matrix keys must be (input_number, output) tuples"
             )
 
-        input_number, output = key
+        key_parts = cast(tuple[object, ...], key)
+        if len(key_parts) != 2:
+            raise InvalidWBMR6CAddressError(
+                "Mapping matrix keys must be (input_number, output) tuples"
+            )
+
+        input_number_raw, output_raw = key_parts
+        if not _is_int_value(input_number_raw) or not _is_int_value(output_raw):
+            raise InvalidWBMR6CAddressError(
+                "Mapping matrix keys must be (input_number, output) tuples"
+            )
+
+        input_number = input_number_raw
+        output = output_raw
         _ = _input_index(input_number)
         _validate_output(output)
+        if not _is_int_value(action):
+            raise InvalidWBMR6CValueError(
+                f"Invalid WB-MR6C mapping action {action!r}"
+            )
         validated[(input_number, output)] = mapping_action_value(action)
 
     if set(validated) != expected_keys:
         missing = expected_keys - set(validated)
         extra = set(validated) - expected_keys
-        details = []
+        details: list[str] = []
         if missing:
             details.append(f"missing cells: {sorted(missing)!r}")
         if extra:
@@ -1136,7 +1236,11 @@ def _validate_mapping_matrix(
     return validated
 
 
-def _mapping_action_response_value(value: Any) -> int:
+def _mapping_action_response_value(value: object) -> int:
+    if not _is_int_value(value):
+        raise WBMR6CModbusResponseError(
+            f"Invalid mapping action returned by device: {value!r}"
+        )
     try:
         return mapping_action_value(value)
     except InvalidWBMR6CValueError as err:
@@ -1163,7 +1267,7 @@ def parse_firmware_version(version: str) -> tuple[int, int, int]:
     """Parse a firmware version string into a comparable three-part tuple."""
     parts: list[int] = []
     for raw_part in version.strip().split("."):
-        digits = []
+        digits: list[str] = []
         for char in raw_part:
             if not char.isdigit():
                 break
@@ -1219,32 +1323,38 @@ def press_counter_delta(previous: int | None, current: int) -> int:
     return (current - previous) % PRESS_COUNTER_MODULO
 
 
-def _extract_bits(response: Any, count: int) -> Sequence[bool]:
-    bits = getattr(response, "bits", None)
-    if bits is None or len(bits) < count:
+def _extract_bits(response: _BitModbusResponse, count: int) -> Sequence[bool]:
+    bits = response.bits
+    if len(bits) < count:
         raise WBMR6CModbusResponseError("Modbus response did not contain enough bits")
     return [bool(value) for value in bits[:count]]
 
 
-def _extract_registers(response: Any, count: int) -> Sequence[int]:
-    registers = getattr(response, "registers", None)
-    if registers is None or len(registers) < count:
+def _extract_registers(response: _RegisterModbusResponse, count: int) -> Sequence[int]:
+    registers = response.registers
+    if len(registers) < count:
         raise WBMR6CModbusResponseError(
             "Modbus response did not contain enough registers"
         )
-    return [int(value) for value in registers[:count]]
+    return [_register_response_value(value) for value in registers[:count]]
 
 
-def _channel_bool_map(values: Sequence[Any]) -> dict[int, bool]:
+def _channel_bool_map(values: Sequence[object]) -> dict[int, bool]:
     if len(values) < CHANNEL_COUNT:
         raise WBMR6CModbusResponseError("Not enough channel values returned")
     return {channel: bool(values[channel - 1]) for channel in CHANNELS}
 
 
-def _channel_int_map(values: Sequence[Any]) -> dict[int, int]:
+def _channel_int_map(values: Sequence[int]) -> dict[int, int]:
     if len(values) < CHANNEL_COUNT:
         raise WBMR6CModbusResponseError("Not enough channel values returned")
-    return {channel: int(values[channel - 1]) for channel in CHANNELS}
+    return {channel: values[channel - 1] for channel in CHANNELS}
+
+
+def _register_response_value(value: object) -> int:
+    if not _is_int_value(value):
+        raise WBMR6CModbusResponseError(f"Invalid register value returned: {value!r}")
+    return value
 
 
 def _decode_ascii_registers(registers: Sequence[int]) -> str:
@@ -1476,5 +1586,5 @@ def _validate_value_range(value: int, minimum: int, maximum: int, name: str) -> 
         )
 
 
-def _is_int_value(value: Any) -> bool:
+def _is_int_value(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)

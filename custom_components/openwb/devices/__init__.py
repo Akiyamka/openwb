@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from ..wb_mr6c_modbus import INPUTS, OUTPUTS
+from ..wb_mr6c_modbus import INPUTS, OUTPUTS, ModbusTransport
 from .base import (
+    FirmwareGate,
     OpenWBDeviceClient,
     OpenWBDeviceDefinition,
     OpenWBDeviceMetadata,
@@ -64,7 +63,7 @@ def config_model_for_raw_model(model: str | None) -> str | None:
 
 
 def create_device_client(
-    transport: Any,
+    transport: ModbusTransport,
     device_id: int,
     model: str | None = None,
 ) -> OpenWBDeviceClient:
@@ -166,7 +165,7 @@ def device_name(model: str | None, device_id: int) -> str:
     return f"{definition.name_prefix} {device_id}"
 
 
-def _gate_supports(gate: Any, firmware_version: str | None) -> bool:
+def _gate_supports(gate: FirmwareGate | None, firmware_version: str | None) -> bool:
     if gate is None or firmware_version is None:
         return False
     try:

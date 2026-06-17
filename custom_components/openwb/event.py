@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 import logging
-from typing import override
+from typing import cast, override
 
 from homeassistant.components.event import EventEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import (
@@ -19,9 +20,9 @@ from . import (
     WBMR6CDeviceState,
     WBMR6CPressEvent,
     device_model_display_name,
+    device_id_from_subentry_data,
     device_name,
 )
-from . import _device_id_from_subentry_data
 from .const import CONF_SERIAL_PORT, DOMAIN, SUBENTRY_TYPE_DEVICE
 from .wb_mr6c_modbus import INPUTS
 
@@ -29,12 +30,13 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: OpenWBConfigEntry,
-    async_add_entities: Callable[..., None],
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up input press event entities for one openWB bus entry."""
-    serial_port = str(entry.data[CONF_SERIAL_PORT])
+    serial_port_value = cast(object, entry.data[CONF_SERIAL_PORT])
+    serial_port = str(serial_port_value)
 
     for config_subentry_id, device_id in _device_subentries(entry):
         if device_id not in entry.runtime_data.clients:
@@ -152,8 +154,6 @@ class OpenWBInputPressEvent(CoordinatorEntity[WBMR6CBusCoordinator], EventEntity
     @property
     def _device_state(self) -> WBMR6CDeviceState | None:
         data = self.coordinator.data
-        if not isinstance(data, Mapping):
-            return None
         state = data.get(self._device_id)
         if isinstance(state, WBMR6CDeviceState):
             return state
@@ -161,31 +161,23 @@ class OpenWBInputPressEvent(CoordinatorEntity[WBMR6CBusCoordinator], EventEntity
 
     @property
     def _press_event(self) -> WBMR6CPressEvent | None:
-        events = getattr(self.coordinator, "press_events", {})
-        if not isinstance(events, Mapping):
-            return None
+        events = self.coordinator.press_events
         event = events.get((self._device_id, self._input_number, self._event_type))
-        if isinstance(event, WBMR6CPressEvent):
-            return event
-        return None
+        return event
 
 
 def _device_subentries(entry: OpenWBConfigEntry) -> list[tuple[str, int]]:
     """Return configured device subentry ids and device ids."""
     devices: list[tuple[str, int]] = []
-    for config_subentry_id, subentry in getattr(entry, "subentries", {}).items():
-        subentry_type = getattr(subentry, "subentry_type", SUBENTRY_TYPE_DEVICE)
-        if subentry_type != SUBENTRY_TYPE_DEVICE:
+    for config_subentry_id, subentry in entry.subentries.items():
+        if subentry.subentry_type != SUBENTRY_TYPE_DEVICE:
             continue
 
-        data = getattr(subentry, "data", {})
-        if not isinstance(data, Mapping):
-            continue
+        data: Mapping[str, object] = subentry.data
 
-        device_id = _device_id_from_subentry_data(data)
+        device_id = device_id_from_subentry_data(data)
         if device_id is None:
             continue
 
-        subentry_id = getattr(subentry, "subentry_id", None) or config_subentry_id
-        devices.append((subentry_id, device_id))
+        devices.append((config_subentry_id, device_id))
     return devices

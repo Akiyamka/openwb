@@ -2,39 +2,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 import logging
-from typing import Any, override
+from typing import cast, override
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import (
-    OpenWBDeviceClient,
     OpenWBConfigEntry,
     WBMR6CBusCoordinator,
     WBMR6CDeviceMetadata,
     WBMR6CDeviceState,
     device_model_display_name,
+    device_id_from_subentry_data,
     device_name,
 )
-from . import _device_id_from_subentry_data
 from .const import CONF_SERIAL_PORT, DOMAIN, SUBENTRY_TYPE_DEVICE
+from .devices.base import OpenWBDeviceClient
 from .wb_mr6c_modbus import OUTPUTS, WBMR6CModbusError
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: OpenWBConfigEntry,
-    async_add_entities: Callable[..., None],
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up relay switch entities for one openWB bus entry."""
-    serial_port = str(entry.data[CONF_SERIAL_PORT])
+    serial_port_value = cast(object, entry.data[CONF_SERIAL_PORT])
+    serial_port = str(serial_port_value)
 
     for config_subentry_id, device_id in _device_subentries(entry):
         client = entry.runtime_data.clients.get(device_id)
@@ -131,7 +133,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
         return state.relay_states.get(self._output)
 
     @override
-    async def async_turn_on(self, **kwargs: Any) -> None:
+    async def async_turn_on(self, **kwargs: object) -> None:
         """Turn the relay output on."""
         if self._supports_relay_one_shot_commands:
             await self._async_write_relay("turn on", self._client.turn_on, True)
@@ -144,7 +146,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
         )
 
     @override
-    async def async_turn_off(self, **kwargs: Any) -> None:
+    async def async_turn_off(self, **kwargs: object) -> None:
         """Turn the relay output off."""
         if self._supports_relay_one_shot_commands:
             await self._async_write_relay("turn off", self._client.turn_off, False)
@@ -157,7 +159,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
         )
 
     @override
-    async def async_toggle(self, **kwargs: Any) -> None:
+    async def async_toggle(self, **kwargs: object) -> None:
         """Toggle the relay output."""
         current_state = self.is_on
         optimistic_state = None if current_state is None else not current_state
@@ -189,8 +191,6 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
     @property
     def _device_state(self) -> WBMR6CDeviceState | None:
         data = self.coordinator.data
-        if not isinstance(data, Mapping):
-            return None
         state = data.get(self._device_id)
         if isinstance(state, WBMR6CDeviceState):
             return state
@@ -199,7 +199,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
     async def _async_write_relay(
         self,
         action: str,
-        write_method: Callable[[int], Any],
+        write_method: Callable[[int], Awaitable[None]],
         optimistic_state: bool | None,
     ) -> None:
         try:
@@ -217,19 +217,15 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
 def _device_subentries(entry: OpenWBConfigEntry) -> list[tuple[str, int]]:
     """Return configured device subentry ids and device ids."""
     devices: list[tuple[str, int]] = []
-    for config_subentry_id, subentry in getattr(entry, "subentries", {}).items():
-        subentry_type = getattr(subentry, "subentry_type", SUBENTRY_TYPE_DEVICE)
-        if subentry_type != SUBENTRY_TYPE_DEVICE:
+    for config_subentry_id, subentry in entry.subentries.items():
+        if subentry.subentry_type != SUBENTRY_TYPE_DEVICE:
             continue
 
-        data = getattr(subentry, "data", {})
-        if not isinstance(data, Mapping):
-            continue
+        data: Mapping[str, object] = subentry.data
 
-        device_id = _device_id_from_subentry_data(data)
+        device_id = device_id_from_subentry_data(data)
         if device_id is None:
             continue
 
-        subentry_id = getattr(subentry, "subentry_id", None) or config_subentry_id
-        devices.append((subentry_id, device_id))
+        devices.append((config_subentry_id, device_id))
     return devices
