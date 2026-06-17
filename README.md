@@ -1,3 +1,4 @@
+![logo](custom_components/openwb/brand/logo.png)
 # OpenWB for Home Assistant
 
 Open Source Home Assistant integration with wirenboard modules in HACS format.
@@ -46,3 +47,7 @@ After copying the integration, use the step-by-step testing guide:
 Backend architecture:
 
 - [Backend design](docs/backend-design.md)
+
+## Screenshots
+
+![screenshot](screenshots/overview.png)
