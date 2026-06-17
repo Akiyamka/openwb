@@ -37,4 +37,4 @@ fi
 uv venv --python "$PYTHON_BIN" --clear
 source .venv/bin/activate
 
-uv pip install homeassistant pymodbus==3.11.2 pyserial==3.5 pytest
+uv pip install homeassistant pymodbus==3.11.2 pyserial==3.5 pytest basedpyright

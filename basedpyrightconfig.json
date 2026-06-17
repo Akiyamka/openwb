@@ -1,0 +1,7 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.13",
+  "include": ["custom_components/openwb"],
+  "exclude": [".venv", ".uv-cache", ".uv-python", "tests"]
+}
