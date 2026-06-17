@@ -11,6 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import (
     OpenWBConfigEntry,
+    WBMR6CBusCoordinator,
     WBMR6CDeviceMetadata,
     WBMR6CDeviceState,
     device_model_display_name,
@@ -62,7 +63,9 @@ async def async_setup_entry(
         async_add_entities(entities, config_subentry_id=config_subentry_id)
 
 
-class OpenWBInputBinarySensor(CoordinatorEntity, BinarySensorEntity):
+class OpenWBInputBinarySensor(
+    CoordinatorEntity[WBMR6CBusCoordinator], BinarySensorEntity
+):
     """Binary sensor entity for one WB-MR6C input level."""
 
     _attr_has_entity_name = True
@@ -96,7 +99,7 @@ class OpenWBInputBinarySensor(CoordinatorEntity, BinarySensorEntity):
             self._attr_device_info["sw_version"] = metadata.firmware_version
 
     @property
-    def available(self) -> bool:
+    def available(self) -> bool:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return whether coordinator data has this device and input."""
         state = self._device_state
         return (
@@ -106,7 +109,7 @@ class OpenWBInputBinarySensor(CoordinatorEntity, BinarySensorEntity):
         )
 
     @property
-    def is_on(self) -> bool | None:
+    def is_on(self) -> bool | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the cached input level."""
         state = self._device_state
         if state is None:

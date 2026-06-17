@@ -40,9 +40,11 @@ class OpenWBDeviceClient(Protocol):
 
     async def read_model(self) -> str:
         """Read and decode the device model string."""
+        ...
 
     async def read_firmware_version(self) -> str:
         """Read and decode the firmware version string."""
+        ...
 
     async def read_press_counters(
         self,
@@ -52,29 +54,37 @@ class OpenWBDeviceClient(Protocol):
         input_registers: bool = False,
     ) -> dict[int, int]:
         """Read press counters for one counter group."""
+        ...
 
     async def read_input_states(
         self, input_numbers: Iterable[int]
     ) -> dict[int, bool]:
         """Read input states for the requested input numbers."""
+        ...
 
     async def read_relay_commands(self) -> dict[int, bool]:
         """Read commanded relay states."""
+        ...
 
     async def read_relay_states(self) -> dict[int, bool]:
         """Read actual relay states."""
+        ...
 
     async def set_relay_command(self, channel: int, value: bool) -> None:
         """Set a persistent relay command."""
+        ...
 
     async def turn_off(self, channel: int) -> None:
         """Send a one-shot relay off command."""
+        ...
 
     async def turn_on(self, channel: int) -> None:
         """Send a one-shot relay on command."""
+        ...
 
     async def toggle(self, channel: int) -> None:
         """Send a one-shot relay toggle command."""
+        ...
 
 
 FirmwareGate = Callable[[str], bool]

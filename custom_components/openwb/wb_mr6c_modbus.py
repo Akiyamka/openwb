@@ -6,7 +6,9 @@ import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol, Sequence, TypeVar
+
+_ModbusValue = TypeVar("_ModbusValue", bool, int)
 
 DEFAULT_DEVICE_ID = 1
 DEFAULT_MODBUS_TCP_PORT = 502
@@ -194,27 +196,45 @@ class ModbusTransport(Protocol):
         self, address: int, count: int, device_id: int
     ) -> Sequence[bool]:
         """Read coil values."""
+        ...
 
     async def write_coil(self, address: int, value: bool, device_id: int) -> None:
         """Write a single coil value."""
+        ...
 
     async def read_discrete_inputs(
         self, address: int, count: int, device_id: int
     ) -> Sequence[bool]:
         """Read discrete input values."""
+        ...
 
     async def read_holding_registers(
         self, address: int, count: int, device_id: int
     ) -> Sequence[int]:
         """Read holding register values."""
+        ...
 
     async def read_input_registers(
         self, address: int, count: int, device_id: int
     ) -> Sequence[int]:
         """Read input register values."""
+        ...
 
     async def write_register(self, address: int, value: int, device_id: int) -> None:
         """Write a single holding register."""
+        ...
+
+
+class ManagedModbusTransport(ModbusTransport, Protocol):
+    """Modbus transport that can be opened and closed by the integration."""
+
+    async def connect(self) -> None:
+        """Open the Modbus connection."""
+        ...
+
+    async def close(self) -> None:
+        """Close the Modbus connection."""
+        ...
 
 
 class _PymodbusTransportAdapter:
@@ -523,8 +543,8 @@ class FakeModbusTransport:
             )
 
     def _maybe_short_response(
-        self, values: list[bool] | list[int], device_id: int
-    ) -> Sequence[bool] | Sequence[int]:
+        self, values: list[_ModbusValue], device_id: int
+    ) -> Sequence[_ModbusValue]:
         if device_id in self.short_response_devices:
             return values[:-1]
         return values

@@ -34,6 +34,9 @@ class UpdateFailed(Exception):
 class DataUpdateCoordinator:
     """Stub Home Assistant DataUpdateCoordinator."""
 
+    def __class_getitem__(cls, item: object) -> type[DataUpdateCoordinator]:
+        return cls
+
     def __init__(
         self,
         hass: Any,
@@ -75,6 +78,9 @@ class DataUpdateCoordinator:
 
 class CoordinatorEntity:
     """Stub Home Assistant CoordinatorEntity."""
+
+    def __class_getitem__(cls, item: object) -> type[CoordinatorEntity]:
+        return cls
 
     def __init__(self, coordinator: DataUpdateCoordinator) -> None:
         self.coordinator = coordinator

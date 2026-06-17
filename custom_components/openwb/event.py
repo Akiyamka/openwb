@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import (
     PRESS_EVENT_TYPES,
     OpenWBConfigEntry,
+    WBMR6CBusCoordinator,
     WBMR6CDeviceMetadata,
     WBMR6CDeviceState,
     WBMR6CPressEvent,
@@ -74,7 +75,7 @@ async def async_setup_entry(
         async_add_entities(entities, config_subentry_id=config_subentry_id)
 
 
-class OpenWBInputPressEvent(CoordinatorEntity, EventEntity):
+class OpenWBInputPressEvent(CoordinatorEntity[WBMR6CBusCoordinator], EventEntity):
     """Event entity for one WB-MR6C input press counter."""
 
     _attr_has_entity_name = True
@@ -119,7 +120,7 @@ class OpenWBInputPressEvent(CoordinatorEntity, EventEntity):
         )
 
     @property
-    def available(self) -> bool:
+    def available(self) -> bool:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return whether coordinator data has this device/input counter."""
         state = self._device_state
         return (

@@ -9,7 +9,6 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
@@ -30,12 +29,11 @@ from .const import (
     SUBENTRY_TYPE_DEVICE,
 )
 from .devices import (
-    SUPPORTED_MODELS,
     config_model_for_raw_model,
     create_device_client,
 )
 from .transport import (
-    ModbusTransport,
+    ManagedModbusTransport,
     PymodbusSerialTransport,
 )
 from .wb_mr6c_modbus import (
@@ -95,7 +93,7 @@ class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -127,7 +125,7 @@ class OpenWBDeviceSubentryFlow(config_entries.ConfigSubentryFlow):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> config_entries.SubentryFlowResult:
         """Handle manual device subentry setup."""
         errors: dict[str, str] = {}
 
@@ -240,13 +238,13 @@ async def _async_read_device_identification(
     entry: config_entries.ConfigEntry, device_id: int
 ) -> tuple[str | None, str | None, str | None]:
     """Read model and firmware metadata for a device subentry."""
-    transport: ModbusTransport | None = None
+    transport: ManagedModbusTransport | None = None
     close_transport = False
 
     try:
         transport, close_transport = _device_validation_transport(entry)
         if close_transport:
-            await transport.connect()  # type: ignore[attr-defined]
+            await transport.connect()
 
         client = create_device_client(transport, device_id)
         model = await client.read_model()
@@ -258,14 +256,14 @@ async def _async_read_device_identification(
     finally:
         if close_transport and transport is not None:
             with suppress(WBMR6CModbusConnectionError):
-                await transport.close()  # type: ignore[attr-defined]
+                await transport.close()
 
     return model, firmware_version, None
 
 
 def _device_validation_transport(
     entry: config_entries.ConfigEntry,
-) -> tuple[ModbusTransport, bool]:
+) -> tuple[ManagedModbusTransport, bool]:
     """Return a transport for subentry validation and whether it should close."""
     runtime_data = getattr(entry, "runtime_data", None)
     runtime_transport = getattr(runtime_data, "transport", None)

@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import (
     OpenWBDeviceClient,
     OpenWBConfigEntry,
+    WBMR6CBusCoordinator,
     WBMR6CDeviceMetadata,
     WBMR6CDeviceState,
     device_model_display_name,
@@ -66,7 +67,7 @@ async def async_setup_entry(
         async_add_entities(entities, config_subentry_id=config_subentry_id)
 
 
-class OpenWBRelaySwitch(CoordinatorEntity, SwitchEntity):
+class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
     """Switch entity for one WB-MR6C relay output."""
 
     _attr_has_entity_name = True
@@ -106,7 +107,7 @@ class OpenWBRelaySwitch(CoordinatorEntity, SwitchEntity):
             self._attr_device_info["sw_version"] = metadata.firmware_version
 
     @property
-    def available(self) -> bool:
+    def available(self) -> bool:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return whether coordinator data has this device and output."""
         state = self._device_state
         return (
@@ -116,7 +117,7 @@ class OpenWBRelaySwitch(CoordinatorEntity, SwitchEntity):
         )
 
     @property
-    def is_on(self) -> bool | None:
+    def is_on(self) -> bool | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the cached relay state."""
         if self._optimistic_state is not None:
             return self._optimistic_state

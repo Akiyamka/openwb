@@ -7,7 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
-from typing import Any, Mapping
+from typing import Any, Mapping, TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -47,6 +47,7 @@ from .devices import (
     unknown_device_metadata,
 )
 from .transport import (
+    ManagedModbusTransport,
     ModbusTransport,
     PymodbusSerialTransport,
 )
@@ -101,7 +102,7 @@ class OpenWBBusConfig:
 class OpenWBBusRuntimeData:
     """Runtime data for one openWB serial bus."""
 
-    transport: ModbusTransport
+    transport: ManagedModbusTransport
     coordinator: WBMR6CBusCoordinator
     clients: dict[int, OpenWBDeviceClient]
     device_metadata: dict[int, WBMR6CDeviceMetadata]
@@ -120,7 +121,7 @@ class WBMR6CPressEvent:
     sequence: int
 
 
-class WBMR6CBusCoordinator(DataUpdateCoordinator):
+class WBMR6CBusCoordinator(DataUpdateCoordinator[dict[int, WBMR6CDeviceState]]):
     """Poll all WB-MR6C devices on one serial bus sequentially."""
 
     def __init__(
@@ -339,7 +340,7 @@ def _bus_config_from_entry_data(data: Mapping[str, Any]) -> OpenWBBusConfig | No
     )
 
 
-def _is_positive_int(value: Any) -> bool:
+def _is_positive_int(value: Any) -> TypeGuard[int]:
     """Return whether value is a positive integer, excluding bool."""
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
