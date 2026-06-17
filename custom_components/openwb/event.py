@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import logging
+from typing import override
 
 from homeassistant.components.event import EventEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import (
@@ -38,7 +40,7 @@ async def async_setup_entry(
         if device_id not in entry.runtime_data.clients:
             _LOGGER.debug(
                 "Skipping openWB input press events for device %s without runtime "
-                "client",
+                + "client",
                 device_id,
             )
             continue
@@ -55,7 +57,7 @@ async def async_setup_entry(
         if not metadata or not metadata.supports_press_counters:
             _LOGGER.debug(
                 "Skipping openWB input press events for device %s without press "
-                "counter support",
+                + "counter support",
                 device_id,
             )
             continue
@@ -78,7 +80,7 @@ async def async_setup_entry(
 class OpenWBInputPressEvent(CoordinatorEntity[WBMR6CBusCoordinator], EventEntity):
     """Event entity for one WB-MR6C input press counter."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name: bool = True
 
     def __init__(
         self,
@@ -92,18 +94,18 @@ class OpenWBInputPressEvent(CoordinatorEntity[WBMR6CBusCoordinator], EventEntity
     ) -> None:
         """Initialize an input press event entity."""
         super().__init__(entry.runtime_data.coordinator)
-        self._device_id = device_id
-        self._input_number = input_number
-        self._event_type = event_type
+        self._device_id: int = device_id
+        self._input_number: int = input_number
+        self._event_type: str = event_type
 
         event_slug = event_type.replace("-", "_")
         device_identifier = f"{serial_port}:{device_id}"
-        self._attr_unique_id = (
+        self._attr_unique_id: str | None = (
             f"{device_identifier}:input_{input_number}_press_{event_slug}"
         )
-        self._attr_name = f"Input {input_number} {event_type} press"
-        self._attr_event_types = [event_type]
-        self._attr_device_info = {
+        self._attr_name: str | None = f"Input {input_number} {event_type} press"
+        self._attr_event_types: list[str] = [event_type]
+        self._attr_device_info: DeviceInfo | None = {
             "identifiers": {(DOMAIN, device_identifier)},
             "manufacturer": "Wiren Board",
             "model": device_model_display_name(
@@ -115,11 +117,12 @@ class OpenWBInputPressEvent(CoordinatorEntity[WBMR6CBusCoordinator], EventEntity
             self._attr_device_info["sw_version"] = metadata.firmware_version
 
         current_event = self._press_event
-        self._last_event_sequence = (
+        self._last_event_sequence: int | None = (
             current_event.sequence if current_event is not None else None
         )
 
     @property
+    @override
     def available(self) -> bool:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return whether coordinator data has this device/input counter."""
         state = self._device_state
@@ -129,6 +132,7 @@ class OpenWBInputPressEvent(CoordinatorEntity[WBMR6CBusCoordinator], EventEntity
             and (self._input_number, self._event_type) in state.press_counts
         )
 
+    @override
     def _handle_coordinator_update(self) -> None:
         """Fire a Home Assistant event when the coordinator detects a new press."""
         event = self._press_event

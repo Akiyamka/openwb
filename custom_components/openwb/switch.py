@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import (
@@ -70,7 +71,7 @@ async def async_setup_entry(
 class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
     """Switch entity for one WB-MR6C relay output."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name: bool = True
 
     def __init__(
         self,
@@ -84,18 +85,18 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
     ) -> None:
         """Initialize a relay switch entity."""
         super().__init__(entry.runtime_data.coordinator)
-        self._client = client
-        self._device_id = device_id
-        self._output = output
-        self._supports_relay_one_shot_commands = (
+        self._client: OpenWBDeviceClient = client
+        self._device_id: int = device_id
+        self._output: int = output
+        self._supports_relay_one_shot_commands: bool = (
             metadata.supports_relay_one_shot_commands if metadata else False
         )
         self._optimistic_state: bool | None = None
 
         device_identifier = f"{serial_port}:{device_id}"
-        self._attr_unique_id = f"{device_identifier}:relay_{output}"
-        self._attr_name = f"Relay {output}"
-        self._attr_device_info = {
+        self._attr_unique_id: str | None = f"{device_identifier}:relay_{output}"
+        self._attr_name: str | None = f"Relay {output}"
+        self._attr_device_info: DeviceInfo | None = {
             "identifiers": {(DOMAIN, device_identifier)},
             "manufacturer": "Wiren Board",
             "model": device_model_display_name(
@@ -107,6 +108,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
             self._attr_device_info["sw_version"] = metadata.firmware_version
 
     @property
+    @override
     def available(self) -> bool:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return whether coordinator data has this device and output."""
         state = self._device_state
@@ -117,6 +119,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
         )
 
     @property
+    @override
     def is_on(self) -> bool | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the cached relay state."""
         if self._optimistic_state is not None:
@@ -127,6 +130,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
             return None
         return state.relay_states.get(self._output)
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the relay output on."""
         if self._supports_relay_one_shot_commands:
@@ -139,6 +143,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
             True,
         )
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the relay output off."""
         if self._supports_relay_one_shot_commands:
@@ -151,6 +156,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
             False,
         )
 
+    @override
     async def async_toggle(self, **kwargs: Any) -> None:
         """Toggle the relay output."""
         current_state = self.is_on
@@ -159,7 +165,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
             if optimistic_state is None:
                 raise HomeAssistantError(
                     f"Unable to toggle openWB relay {self._output} "
-                    f"on device {self._device_id} without a current relay state"
+                    + f"on device {self._device_id} without a current relay state"
                 )
             await self._async_write_relay(
                 "toggle",
@@ -174,6 +180,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
             "toggle", self._client.toggle, optimistic_state
         )
 
+    @override
     def _handle_coordinator_update(self) -> None:
         """Clear optimistic state when a scheduled poll supplies fresh data."""
         self._optimistic_state = None
@@ -200,7 +207,7 @@ class OpenWBRelaySwitch(CoordinatorEntity[WBMR6CBusCoordinator], SwitchEntity):
         except WBMR6CModbusError as err:
             raise HomeAssistantError(
                 f"Unable to {action} openWB relay {self._output} "
-                f"on device {self._device_id}"
+                + f"on device {self._device_id}"
             ) from err
 
         self._optimistic_state = optimistic_state

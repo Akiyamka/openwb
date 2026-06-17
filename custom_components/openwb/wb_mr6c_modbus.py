@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Protocol, Sequence, TypeVar
+from typing import Any, Protocol, TypeVar
 
 _ModbusValue = TypeVar("_ModbusValue", bool, int)
 
@@ -237,14 +237,31 @@ class ManagedModbusTransport(ModbusTransport, Protocol):
         ...
 
 
+class _PymodbusClient(Protocol):
+    """Minimal pymodbus client surface used by the transport adapter."""
+
+    @property
+    def connected(self) -> bool:
+        """Return whether the underlying pymodbus client is connected."""
+        ...
+
+    async def connect(self) -> bool:
+        """Open the underlying pymodbus connection."""
+        ...
+
+    def close(self) -> None:
+        """Close the underlying pymodbus connection."""
+        ...
+
+
 class _PymodbusTransportAdapter:
     """Shared async pymodbus transport behavior."""
 
-    def __init__(self, client: Any, connection_name: str) -> None:
+    def __init__(self, client: _PymodbusClient, connection_name: str) -> None:
         """Initialize the transport adapter."""
-        self._client = client
-        self._connection_name = connection_name
-        self._lock = asyncio.Lock()
+        self._client: _PymodbusClient = client
+        self._connection_name: str = connection_name
+        self._lock: asyncio.Lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """Open the Modbus connection if needed."""
@@ -430,10 +447,10 @@ class FakeModbusTransport:
         self.input_registers: dict[tuple[int, int], int] = {}
         self.calls: list[tuple[str, int, int | bool, int]] = []
         self.writes: list[tuple[str, int, int | bool, int]] = []
-        self.unavailable_devices = set(unavailable_devices or ())
-        self.response_error_devices = set(response_error_devices or ())
-        self.short_response_devices = set(short_response_devices or ())
-        self.connected = False
+        self.unavailable_devices: set[int] = set(unavailable_devices or ())
+        self.response_error_devices: set[int] = set(response_error_devices or ())
+        self.short_response_devices: set[int] = set(short_response_devices or ())
+        self.connected: bool = False
 
     async def connect(self) -> None:
         """Mark the fake transport connected."""
@@ -630,7 +647,7 @@ class WBMR6CModbus:
             if input_registers:
                 raise InvalidWBMR6CAddressError(
                     "Activation counters from input-register-only devices are not "
-                    "exposed by read_press_counters"
+                    + "exposed by read_press_counters"
                 )
             values = await self.transport.read_holding_registers(
                 int(counter_event), CHANNEL_COUNT, self.device_id
@@ -1099,7 +1116,7 @@ def _validate_mapping_matrix(
             )
 
         input_number, output = key
-        _input_index(input_number)
+        _ = _input_index(input_number)
         _validate_output(output)
         validated[(input_number, output)] = mapping_action_value(action)
 
@@ -1378,7 +1395,7 @@ def _validate_input_mode_for_input(
     input_number: int,
     mode: InputMode | int,
 ) -> InputMode:
-    _input_index(input_number)
+    _ = _input_index(input_number)
     input_mode = _validate_input_mode(mode)
     if input_mode is InputMode.DISABLED:
         raise InvalidWBMR6CValueError(

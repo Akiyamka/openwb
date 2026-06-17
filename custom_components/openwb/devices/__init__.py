@@ -9,7 +9,6 @@ from .base import (
     OpenWBDeviceClient,
     OpenWBDeviceDefinition,
     OpenWBDeviceMetadata,
-    OpenWBDeviceState,
 )
 from .wb_mcm8 import DEFINITION as WB_MCM8_DEFINITION
 from .wb_mr6c_v2 import DEFINITION as WB_MR6C_V2_DEFINITION

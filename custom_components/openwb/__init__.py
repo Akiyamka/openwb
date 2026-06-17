@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
-from typing import Any, Mapping, TypeGuard
+from typing import Any, TypeGuard, override
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -24,51 +24,27 @@ from .const import (
     CONF_SERIAL_PORT,
     CONF_STOPBITS,
     DOMAIN,
-    MODEL_WB_MCM8,
-    MODEL_WB_MR6C_V2,
-    MODEL_WB_MR6CU_V2,
     PARITY_VALUES,
     STOPBITS_VALUES,
     SUBENTRY_TYPE_DEVICE,
 )
 from .devices import (
-    OpenWBDeviceClient,
-    OpenWBDeviceMetadata,
-    OpenWBDeviceState,
-    config_model_for_model,
     create_device_client,
     device_metadata_from_identification,
     device_model_display_name as _registry_device_model_display_name,
     device_name as _registry_device_name,
-    input_numbers_for_model,
-    output_numbers_for_model,
-    press_counter_input_registers_for_model,
-    supports_mapping_matrix_for_model,
     unknown_device_metadata,
 )
+from .devices.base import OpenWBDeviceClient, OpenWBDeviceMetadata, OpenWBDeviceState
 from .transport import (
     ManagedModbusTransport,
     ModbusTransport,
     PymodbusSerialTransport,
 )
 from .wb_mr6c_modbus import (
-    INPUTS,
-    MCM8_INPUTS,
-    MCM8_MODEL,
-    MR6C_MODEL,
-    MR6CU_MODEL,
-    OUTPUTS,
     PressCounterEvent,
-    WBMR6C_MODEL,
-    WBMR6CU_MODEL,
-    WBMCM8_MODEL,
-    WBMR6CModbus,
     WBMR6CModbusConnectionError,
     WBMR6CModbusError,
-    firmware_supports_mcm8_press_counters,
-    firmware_supports_relay_one_shot_commands,
-    firmware_supports_press_counters,
-    firmware_supports_relay_state_discrete_inputs,
     press_counter_delta,
 )
 
@@ -139,12 +115,13 @@ class WBMR6CBusCoordinator(DataUpdateCoordinator[dict[int, WBMR6CDeviceState]]):
             update_interval=_BUS_UPDATE_INTERVAL,
             config_entry=entry,
         )
-        self.clients = clients
-        self.device_metadata = device_metadata
+        self.clients: dict[int, OpenWBDeviceClient] = clients
+        self.device_metadata: dict[int, WBMR6CDeviceMetadata] = device_metadata
         self.press_events: dict[tuple[int, int, str], WBMR6CPressEvent] = {}
         self._previous_press_counts: dict[tuple[int, int, str], int] = {}
         self._press_event_sequences: dict[tuple[int, int, str], int] = {}
 
+    @override
     async def _async_update_data(self) -> dict[int, WBMR6CDeviceState]:
         """Fetch one live-state snapshot for all currently configured devices."""
         data: dict[int, WBMR6CDeviceState] = {}
@@ -220,7 +197,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if _bus_config_from_entry_data(entry.data) is None:
         _LOGGER.error(
             "openWB config entry %s cannot be migrated to a serial bus entry; "
-            "remove and re-add the integration",
+            + "remove and re-add the integration",
             entry.entry_id,
         )
         return False
@@ -228,7 +205,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     config_entries_manager = getattr(hass, "config_entries", None)
     update_entry = getattr(config_entries_manager, "async_update_entry", None)
     if callable(update_entry):
-        update_entry(entry, version=CONFIG_ENTRY_VERSION)
+        _ = update_entry(entry, version=CONFIG_ENTRY_VERSION)
     elif hasattr(entry, "version"):
         entry.version = CONFIG_ENTRY_VERSION
 
@@ -241,7 +218,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenWBConfigEntry) -> bo
     if bus_config is None:
         _LOGGER.error(
             "openWB config entry %s is missing serial bus settings; remove and "
-            "re-add the integration",
+            + "re-add the integration",
             entry.entry_id,
         )
         return False
@@ -308,12 +285,12 @@ def _register_entry_update_reload_listener(entry: ConfigEntry) -> None:
     add_update_listener = getattr(entry, "add_update_listener", None)
     async_on_unload = getattr(entry, "async_on_unload", None)
     if callable(add_update_listener) and callable(async_on_unload):
-        async_on_unload(add_update_listener(_async_reload_entry))
+        _ = async_on_unload(add_update_listener(_async_reload_entry))
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload an openWB bus entry so runtime clients match subentries."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    _ = await hass.config_entries.async_reload(entry.entry_id)
 
 
 def _bus_config_from_entry_data(data: Mapping[str, Any]) -> OpenWBBusConfig | None:
@@ -485,52 +462,6 @@ def _non_empty_string(value: Any) -> str | None:
     return None
 
 
-def _supports_press_counters(model: str | None, firmware_version: str | None) -> bool:
-    """Return whether firmware metadata enables press-counter polling."""
-    return device_metadata_from_identification(
-        model, firmware_version
-    ).supports_press_counters
-
-
-def _supports_relay_state_discrete_inputs(firmware_version: str | None) -> bool:
-    """Return whether firmware metadata enables actual relay-state polling."""
-    return device_metadata_from_identification(
-        MODEL_WB_MR6C_V2, firmware_version
-    ).supports_relay_state_discrete_inputs
-
-
-def _supports_relay_one_shot_commands(firmware_version: str | None) -> bool:
-    """Return whether firmware metadata enables one-shot relay commands."""
-    return device_metadata_from_identification(
-        MODEL_WB_MR6C_V2, firmware_version
-    ).supports_relay_one_shot_commands
-
-
-def _supports_inputs(model: str | None) -> bool:
-    """Return whether the model has physical inputs."""
-    return bool(_device_input_numbers(model))
-
-
-def _supports_mapping_matrix(model: str | None) -> bool:
-    """Return whether the model supports input-to-output mapping matrices."""
-    return supports_mapping_matrix_for_model(model)
-
-
-def _device_input_numbers(model: str | None) -> tuple[int, ...]:
-    """Return input numbers exposed by the model."""
-    return input_numbers_for_model(model)
-
-
-def _device_output_numbers(model: str | None) -> tuple[int, ...]:
-    """Return relay output numbers exposed by the model."""
-    return output_numbers_for_model(model)
-
-
-def _press_counter_input_registers(model: str | None) -> bool:
-    """Return whether press counters must be read from input registers."""
-    return press_counter_input_registers_for_model(model)
-
-
 def device_model_display_name(model: str | None) -> str:
     """Return a Home Assistant device-info model name."""
     return _registry_device_model_display_name(model)
@@ -539,11 +470,6 @@ def device_model_display_name(model: str | None) -> str:
 def device_name(model: str | None, device_id: int) -> str:
     """Return a Home Assistant device display name."""
     return _registry_device_name(model, device_id)
-
-
-def _device_model_key(model: str | None) -> str | None:
-    """Normalize raw Modbus model strings and stored config values."""
-    return config_model_for_model(model)
 
 
 _UNKNOWN_DEVICE_METADATA = unknown_device_metadata()

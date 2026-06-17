@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import logging
+from typing import override
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import (
@@ -36,7 +38,7 @@ async def async_setup_entry(
         if device_id not in entry.runtime_data.clients:
             _LOGGER.debug(
                 "Skipping openWB input binary sensors for device %s without "
-                "runtime client",
+                + "runtime client",
                 device_id,
             )
             continue
@@ -68,7 +70,7 @@ class OpenWBInputBinarySensor(
 ):
     """Binary sensor entity for one WB-MR6C input level."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name: bool = True
 
     def __init__(
         self,
@@ -81,13 +83,13 @@ class OpenWBInputBinarySensor(
     ) -> None:
         """Initialize an input level binary sensor."""
         super().__init__(entry.runtime_data.coordinator)
-        self._device_id = device_id
-        self._input_number = input_number
+        self._device_id: int = device_id
+        self._input_number: int = input_number
 
         device_identifier = f"{serial_port}:{device_id}"
-        self._attr_unique_id = f"{device_identifier}:input_{input_number}"
-        self._attr_name = f"Input {input_number}"
-        self._attr_device_info = {
+        self._attr_unique_id: str | None = f"{device_identifier}:input_{input_number}"
+        self._attr_name: str | None = f"Input {input_number}"
+        self._attr_device_info: DeviceInfo | None = {
             "identifiers": {(DOMAIN, device_identifier)},
             "manufacturer": "Wiren Board",
             "model": device_model_display_name(
@@ -99,6 +101,7 @@ class OpenWBInputBinarySensor(
             self._attr_device_info["sw_version"] = metadata.firmware_version
 
     @property
+    @override
     def available(self) -> bool:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return whether coordinator data has this device and input."""
         state = self._device_state
@@ -109,6 +112,7 @@ class OpenWBInputBinarySensor(
         )
 
     @property
+    @override
     def is_on(self) -> bool | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the cached input level."""
         state = self._device_state

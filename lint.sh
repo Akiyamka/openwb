@@ -14,11 +14,11 @@ EOF
 fi
 
 if [[ -x .venv/bin/basedpyright ]]; then
-  exec .venv/bin/basedpyright --level error "$@"
+  exec .venv/bin/basedpyright --level warning "$@"
 fi
 
 if command -v basedpyright >/dev/null 2>&1; then
-  exec basedpyright --level error "$@"
+  exec basedpyright --level warning "$@"
 fi
 
 cat <<'EOF'

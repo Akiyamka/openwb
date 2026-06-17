@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Any
+from typing import Any, override
 
 import voluptuous as vol
 
@@ -81,16 +81,18 @@ STEP_DEVICE_DATA_SCHEMA = vol.Schema(
 class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for openWB."""
 
-    VERSION = CONFIG_ENTRY_VERSION
+    VERSION: int = CONFIG_ENTRY_VERSION
 
     @classmethod
     @callback
+    @override
     def async_get_supported_subentry_types(
         cls, config_entry: config_entries.ConfigEntry
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
         """Return subentries supported by openWB bus entries."""
         return {SUBENTRY_TYPE_DEVICE: OpenWBDeviceSubentryFlow}
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
@@ -103,8 +105,8 @@ class OpenWBConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not errors:
                 serial_port = data[CONF_SERIAL_PORT]
 
-                await self.async_set_unique_id(f"wb_mr6c_bus:{serial_port}")
-                self._abort_if_unique_id_configured()
+                _ = await self.async_set_unique_id(f"wb_mr6c_bus:{serial_port}")
+                _ = self._abort_if_unique_id_configured()
 
                 if not await _async_can_open_serial_bus(data):
                     errors["base"] = "cannot_connect"
