@@ -25,36 +25,23 @@ from .const import (
     DEFAULT_PARITY,
     DEFAULT_STOPBITS,
     DOMAIN,
-    MODEL_WB_MCM8,
-    MODEL_WB_MR6C_V2,
-    MODEL_WB_MR6CU_V2,
     PARITY_VALUES,
     STOPBITS_VALUES,
     SUBENTRY_TYPE_DEVICE,
 )
-from .wb_mr6c_modbus import (
-    MCM8_MODEL,
-    MR6C_MODEL,
-    MR6CU_MODEL,
+from .devices import (
+    SUPPORTED_MODELS,
+    config_model_for_raw_model,
+    create_device_client,
+)
+from .transport import (
     ModbusTransport,
     PymodbusSerialTransport,
-    SUPPORTED_MODELS,
-    WBMR6C_MODEL,
-    WBMR6CU_MODEL,
-    WBMCM8_MODEL,
-    WBMR6CModbus,
+)
+from .wb_mr6c_modbus import (
     WBMR6CModbusConnectionError,
     WBMR6CModbusResponseError,
 )
-
-_MODEL_CONFIG_VALUES = {
-    WBMR6C_MODEL: MODEL_WB_MR6C_V2,
-    MR6C_MODEL: MODEL_WB_MR6C_V2,
-    WBMR6CU_MODEL: MODEL_WB_MR6CU_V2,
-    MR6CU_MODEL: MODEL_WB_MR6CU_V2,
-    WBMCM8_MODEL: MODEL_WB_MCM8,
-    MCM8_MODEL: MODEL_WB_MCM8,
-}
 
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -161,16 +148,20 @@ class OpenWBDeviceSubentryFlow(config_entries.ConfigSubentryFlow):
                     model, firmware_version, error = (
                         await _async_read_device_identification(entry, device_id)
                     )
+                    config_model = None
                     if error is not None:
                         errors["base"] = error
-                    elif model not in SUPPORTED_MODELS:
-                        errors["base"] = "unexpected_model"
                     else:
+                        config_model = config_model_for_raw_model(model)
+
+                    if error is None and config_model is None:
+                        errors["base"] = "unexpected_model"
+                    elif error is None:
                         return self.async_create_entry(
                             title=f"Modbus module {device_id}",
                             data={
                                 CONF_DEVICE_ID: device_id,
-                                CONF_MODEL: _MODEL_CONFIG_VALUES[model],
+                                CONF_MODEL: config_model,
                                 CONF_FIRMWARE_VERSION: firmware_version,
                             },
                             unique_id=_device_subentry_unique_id(
@@ -257,7 +248,7 @@ async def _async_read_device_identification(
         if close_transport:
             await transport.connect()  # type: ignore[attr-defined]
 
-        client = WBMR6CModbus(transport, device_id=device_id)
+        client = create_device_client(transport, device_id)
         model = await client.read_model()
         firmware_version = await client.read_firmware_version()
     except WBMR6CModbusConnectionError:

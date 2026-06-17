@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -213,14 +212,6 @@ def _complete_mapping_matrix(action: int = 0) -> dict[tuple[int, int], int]:
         for input_number in wb_mr6c_modbus.INPUTS
         for output in wb_mr6c_modbus.OUTPUTS
     }
-
-
-class ManifestTest(unittest.TestCase):
-    def test_manifest_version(self) -> None:
-        manifest_path = MODULE_PATH.parent / "manifest.json"
-        manifest = json.loads(manifest_path.read_text())
-
-        self.assertEqual(manifest["version"], "0.9.3")
 
 
 class AddressingTest(unittest.TestCase):

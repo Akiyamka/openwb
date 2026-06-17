@@ -12,6 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import (
+    OpenWBDeviceClient,
     OpenWBConfigEntry,
     WBMR6CDeviceMetadata,
     WBMR6CDeviceState,
@@ -20,7 +21,7 @@ from . import (
 )
 from . import _device_id_from_subentry_data
 from .const import CONF_SERIAL_PORT, DOMAIN, SUBENTRY_TYPE_DEVICE
-from .wb_mr6c_modbus import OUTPUTS, WBMR6CModbus, WBMR6CModbusError
+from .wb_mr6c_modbus import OUTPUTS, WBMR6CModbusError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class OpenWBRelaySwitch(CoordinatorEntity, SwitchEntity):
         self,
         *,
         entry: OpenWBConfigEntry,
-        client: WBMR6CModbus,
+        client: OpenWBDeviceClient,
         serial_port: str,
         device_id: int,
         output: int,
