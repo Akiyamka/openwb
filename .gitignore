@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.uv-cache/
+.uv-python/
 
 .DS_Store
 
@@ -11,4 +13,3 @@ __pycache__/
 .hass/
 .storage/
 deps/
-
