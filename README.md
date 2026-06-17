@@ -1,4 +1,6 @@
 ![logo](custom_components/openwb/brand/logo.png)
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Akiyamka&repository=https%3A%2F%2Fgithub.com%2FAkiyamka%2Fopenwb%2F)
 # OpenWB for Home Assistant
 
 Open Source Home Assistant integration with wirenboard modules in HACS format.
