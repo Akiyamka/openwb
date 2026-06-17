@@ -2,10 +2,16 @@
 # OpenWB for Home Assistant
 
 Open Source Home Assistant integration with wirenboard modules in HACS format.
+Allow to use supported set of wirenboard modules without closed source wirenboard controller
+
+Usually, in order to have support for wirenboard controllers in home assistant, you need to purchase an expensive controller running Linux. 
+This controller is controlled from homeasstant via the MQTT protocol, and it itself transmits commands to the end devices via the modbus protocol.
+
+However, if you already have a device capable of running Linux (for example Raspberry PI) with homeassistant installed on it, you can communicate with devices via the modbus protocol directly using this module
 
 ## Status
 
-Under development, not ready for production
+Not support fast modbus yet
 
 Supported modules:
 
