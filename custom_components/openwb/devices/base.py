@@ -6,7 +6,16 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..wb_mr6c_modbus import ModbusTransport, PressCounterEvent
+from ..wb_mr6c_modbus import (
+    InputMode,
+    ModbusTransport,
+    OutputPowerOnMode,
+    PressCounterEvent,
+    SafeModeAction,
+    SafeModeInputControl,
+    SafeState,
+    WBMR6CBasicSettings,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +95,90 @@ class OpenWBDeviceClient(Protocol):
 
     async def toggle(self, channel: int) -> None:
         """Send a one-shot relay toggle command."""
+        ...
+
+    async def read_basic_settings(self) -> WBMR6CBasicSettings:
+        """Read core on-demand settings."""
+        ...
+
+    async def read_output_power_on_mode(self) -> int:
+        """Read output power-on behavior."""
+        ...
+
+    async def set_output_power_on_mode(
+        self, mode: OutputPowerOnMode | int
+    ) -> None:
+        """Set output power-on behavior."""
+        ...
+
+    async def read_communication_timeout_s(self) -> int:
+        """Read the communication-loss timeout in seconds."""
+        ...
+
+    async def set_communication_timeout_s(self, value: int) -> None:
+        """Set the communication-loss timeout in seconds."""
+        ...
+
+    async def read_input_modes(self) -> dict[int, int]:
+        """Read input modes."""
+        ...
+
+    async def set_input_mode(self, input_number: int, mode: InputMode | int) -> None:
+        """Set one input mode."""
+        ...
+
+    async def read_debounce_ms(self) -> dict[int, int]:
+        """Read input debounce timeouts."""
+        ...
+
+    async def set_debounce_ms(self, input_number: int, value: int) -> None:
+        """Set one input debounce timeout."""
+        ...
+
+    async def read_long_press_ms(self) -> dict[int, int]:
+        """Read input long-press timeouts."""
+        ...
+
+    async def set_long_press_ms(self, input_number: int, value: int) -> None:
+        """Set one input long-press timeout."""
+        ...
+
+    async def read_second_press_wait_ms(self) -> dict[int, int]:
+        """Read input second-press wait timeouts."""
+        ...
+
+    async def set_second_press_wait_ms(self, input_number: int, value: int) -> None:
+        """Set one input second-press wait timeout."""
+        ...
+
+    async def read_safe_states(self) -> dict[int, bool]:
+        """Read output safe states."""
+        ...
+
+    async def set_safe_state(
+        self, output: int, state: SafeState | int | bool
+    ) -> None:
+        """Set one output safe state."""
+        ...
+
+    async def read_safe_mode_actions(self) -> dict[int, int]:
+        """Read safe-mode output actions."""
+        ...
+
+    async def set_safe_mode_action(
+        self, output: int, action: SafeModeAction | int
+    ) -> None:
+        """Set one safe-mode output action."""
+        ...
+
+    async def read_safe_mode_input_controls(self) -> dict[int, int]:
+        """Read safe-mode input-control behavior."""
+        ...
+
+    async def set_safe_mode_input_control(
+        self, output: int, control: SafeModeInputControl | int
+    ) -> None:
+        """Set one safe-mode input-control behavior."""
         ...
 
 

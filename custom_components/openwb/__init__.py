@@ -36,6 +36,7 @@ from .devices import (
     unknown_device_metadata,
 )
 from .devices.base import OpenWBDeviceClient, OpenWBDeviceMetadata, OpenWBDeviceState
+from .settings import OpenWBSettingsBackend
 from .transport import (
     ManagedModbusTransport,
     ModbusTransport,
@@ -81,6 +82,7 @@ class OpenWBBusRuntimeData:
     transport: ManagedModbusTransport
     coordinator: WBMR6CBusCoordinator
     clients: dict[int, OpenWBDeviceClient]
+    settings: OpenWBSettingsBackend
     device_metadata: dict[int, WBMR6CDeviceMetadata]
     remove_coordinator_listener: Callable[[], None]
 
@@ -250,6 +252,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenWBConfigEntry) -> bo
             transport=transport,
             coordinator=coordinator,
             clients=clients,
+            settings=OpenWBSettingsBackend(clients),
             device_metadata=device_metadata,
             remove_coordinator_listener=remove_coordinator_listener,
         )

@@ -304,9 +304,19 @@ class TextSelector:
         self.config = config
 
 
+class TextSelectorConfig:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+
 class SelectSelector:
     def __init__(self, config: object | None = None) -> None:
         self.config = config
+
+
+class SelectSelectorConfig:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
 
 
 class TextSelectorType:
@@ -344,11 +354,19 @@ def _install_homeassistant_stubs() -> None:
     exceptions.HomeAssistantError = HomeAssistantError
 
     helpers = types.ModuleType("homeassistant.helpers")
+    device_registry = types.ModuleType("homeassistant.helpers.device_registry")
+    entity_platform = types.ModuleType("homeassistant.helpers.entity_platform")
     selector = types.ModuleType("homeassistant.helpers.selector")
     update_coordinator = types.ModuleType("homeassistant.helpers.update_coordinator")
+    device_registry.DeviceInfo = dict[str, Any]
+    entity_platform.AddConfigEntryEntitiesCallback = Any
     selector.TextSelector = TextSelector
+    selector.TextSelectorConfig = TextSelectorConfig
     selector.TextSelectorType = TextSelectorType
     selector.SelectSelector = SelectSelector
+    selector.SelectSelectorConfig = SelectSelectorConfig
+    helpers.device_registry = device_registry
+    helpers.entity_platform = entity_platform
     helpers.selector = selector
     update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
     update_coordinator.CoordinatorEntity = CoordinatorEntity
@@ -376,6 +394,8 @@ def _install_homeassistant_stubs() -> None:
     sys.modules["homeassistant.data_entry_flow"] = data_entry_flow
     sys.modules["homeassistant.exceptions"] = exceptions
     sys.modules["homeassistant.helpers"] = helpers
+    sys.modules["homeassistant.helpers.device_registry"] = device_registry
+    sys.modules["homeassistant.helpers.entity_platform"] = entity_platform
     sys.modules["homeassistant.helpers.selector"] = selector
     sys.modules["homeassistant.helpers.update_coordinator"] = update_coordinator
     sys.modules["voluptuous"] = voluptuous
@@ -408,6 +428,8 @@ _STUBBED_MODULE_NAMES = (
     "homeassistant.data_entry_flow",
     "homeassistant.exceptions",
     "homeassistant.helpers",
+    "homeassistant.helpers.device_registry",
+    "homeassistant.helpers.entity_platform",
     "homeassistant.helpers.selector",
     "homeassistant.helpers.update_coordinator",
     "voluptuous",
@@ -416,6 +438,7 @@ _STUBBED_MODULE_NAMES = (
     "custom_components.openwb.config_flow",
     "custom_components.openwb.const",
     "custom_components.openwb.event",
+    "custom_components.openwb.settings",
     "custom_components.openwb.switch",
     "custom_components.openwb.wb_mr6c_modbus",
 )
@@ -1128,6 +1151,11 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             integration.WBMR6CBusCoordinator,
         )
         self.assertEqual(entry.runtime_data.clients, {})
+        self.assertIsInstance(
+            entry.runtime_data.settings,
+            integration.OpenWBSettingsBackend,
+        )
+        self.assertIs(entry.runtime_data.settings.clients, entry.runtime_data.clients)
         self.assertEqual(entry.runtime_data.coordinator.data, {})
         self.assertEqual(
             entry.runtime_data.coordinator.listeners,
@@ -1679,6 +1707,230 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             hass.config_entries.unloaded_platforms,
             [(entry, ("binary_sensor", "event", "switch"))],
         )
+
+
+class FakeSettingsClient:
+    def __init__(self) -> None:
+        self.basic_settings = modbus.WBMR6CBasicSettings(
+            output_power_on_mode=1,
+            communication_timeout_s=10,
+            input_modes={1: 6, 0: 4},
+            debounce_ms={1: 50, 0: 100},
+            long_press_ms={1: 1000, 0: 1500},
+            second_press_wait_ms={1: 300, 0: 400},
+            safe_states={1: True},
+            safe_mode_actions={1: 1},
+            safe_mode_input_controls={1: 2},
+        )
+        self.calls: list[tuple[Any, ...]] = []
+        self.error: Exception | None = None
+
+    async def read_basic_settings(self) -> Any:
+        await self._maybe_raise()
+        self.calls.append(("read_basic_settings",))
+        return self.basic_settings
+
+    async def read_output_power_on_mode(self) -> int:
+        await self._maybe_raise()
+        self.calls.append(("read_output_power_on_mode",))
+        return 1
+
+    async def set_output_power_on_mode(self, mode: object) -> None:
+        await self._call("set_output_power_on_mode", mode)
+
+    async def read_communication_timeout_s(self) -> int:
+        await self._maybe_raise()
+        self.calls.append(("read_communication_timeout_s",))
+        return 10
+
+    async def set_communication_timeout_s(self, value: int) -> None:
+        await self._call("set_communication_timeout_s", value)
+
+    async def read_input_modes(self) -> dict[int, int]:
+        await self._maybe_raise()
+        self.calls.append(("read_input_modes",))
+        return {1: 6, 0: 4}
+
+    async def set_input_mode(self, input_number: int, mode: object) -> None:
+        await self._call("set_input_mode", input_number, mode)
+
+    async def read_debounce_ms(self) -> dict[int, int]:
+        await self._maybe_raise()
+        self.calls.append(("read_debounce_ms",))
+        return {1: 50, 0: 100}
+
+    async def set_debounce_ms(self, input_number: int, value: int) -> None:
+        await self._call("set_debounce_ms", input_number, value)
+
+    async def read_long_press_ms(self) -> dict[int, int]:
+        await self._maybe_raise()
+        self.calls.append(("read_long_press_ms",))
+        return {1: 1000, 0: 1500}
+
+    async def set_long_press_ms(self, input_number: int, value: int) -> None:
+        await self._call("set_long_press_ms", input_number, value)
+
+    async def read_second_press_wait_ms(self) -> dict[int, int]:
+        await self._maybe_raise()
+        self.calls.append(("read_second_press_wait_ms",))
+        return {1: 300, 0: 400}
+
+    async def set_second_press_wait_ms(self, input_number: int, value: int) -> None:
+        await self._call("set_second_press_wait_ms", input_number, value)
+
+    async def read_safe_states(self) -> dict[int, bool]:
+        await self._maybe_raise()
+        self.calls.append(("read_safe_states",))
+        return {1: True}
+
+    async def set_safe_state(self, output: int, state: object) -> None:
+        await self._call("set_safe_state", output, state)
+
+    async def read_safe_mode_actions(self) -> dict[int, int]:
+        await self._maybe_raise()
+        self.calls.append(("read_safe_mode_actions",))
+        return {1: 1}
+
+    async def set_safe_mode_action(self, output: int, action: object) -> None:
+        await self._call("set_safe_mode_action", output, action)
+
+    async def read_safe_mode_input_controls(self) -> dict[int, int]:
+        await self._maybe_raise()
+        self.calls.append(("read_safe_mode_input_controls",))
+        return {1: 2}
+
+    async def set_safe_mode_input_control(
+        self, output: int, control: object
+    ) -> None:
+        await self._call("set_safe_mode_input_control", output, control)
+
+    async def _call(self, method: str, *args: object) -> None:
+        await self._maybe_raise()
+        self.calls.append((method, *args))
+
+    async def _maybe_raise(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+
+class SettingsBackendTest(unittest.IsolatedAsyncioTestCase):
+    async def test_read_settings_uses_on_demand_client(self) -> None:
+        client = FakeSettingsClient()
+        backend = integration.OpenWBSettingsBackend({32: client})
+
+        basic_settings = await backend.read_basic_settings(32)
+        input_modes = await backend.read_input_modes(32)
+        debounce_ms = await backend.read_debounce_ms(32)
+        long_press_ms = await backend.read_long_press_ms(32)
+        second_press_wait_ms = await backend.read_second_press_wait_ms(32)
+        safe_states = await backend.read_safe_states(32)
+        safe_mode_actions = await backend.read_safe_mode_actions(32)
+        safe_mode_input_controls = await backend.read_safe_mode_input_controls(32)
+        output_power_on_mode = await backend.read_output_power_on_mode(32)
+        communication_timeout_s = await backend.read_communication_timeout_s(32)
+
+        self.assertIs(basic_settings, client.basic_settings)
+        self.assertEqual(input_modes[0], 4)
+        self.assertEqual(debounce_ms[1], 50)
+        self.assertEqual(long_press_ms[0], 1500)
+        self.assertEqual(second_press_wait_ms[1], 300)
+        self.assertTrue(safe_states[1])
+        self.assertEqual(safe_mode_actions[1], 1)
+        self.assertEqual(safe_mode_input_controls[1], 2)
+        self.assertEqual(output_power_on_mode, 1)
+        self.assertEqual(communication_timeout_s, 10)
+        self.assertEqual(
+            client.calls,
+            [
+                ("read_basic_settings",),
+                ("read_input_modes",),
+                ("read_debounce_ms",),
+                ("read_long_press_ms",),
+                ("read_second_press_wait_ms",),
+                ("read_safe_states",),
+                ("read_safe_mode_actions",),
+                ("read_safe_mode_input_controls",),
+                ("read_output_power_on_mode",),
+                ("read_communication_timeout_s",),
+            ],
+        )
+
+    async def test_write_settings_use_explicit_client_methods(self) -> None:
+        client = FakeSettingsClient()
+        backend = integration.OpenWBSettingsBackend({32: client})
+
+        await backend.set_input_mode(32, 0, modbus.InputMode.MAPPING_MATRIX_EDGE)
+        await backend.set_debounce_ms(32, 0, 75)
+        await backend.set_long_press_ms(32, 0, 1200)
+        await backend.set_second_press_wait_ms(32, 0, 350)
+        await backend.set_safe_state(32, 6, modbus.SafeState.ON)
+        await backend.set_safe_mode_action(
+            32,
+            3,
+            modbus.SafeModeAction.SET_SAFE_STATE,
+        )
+        await backend.set_safe_mode_input_control(
+            32,
+            6,
+            modbus.SafeModeInputControl.ALLOW_ONLY_IN_SAFE_MODE,
+        )
+        await backend.set_output_power_on_mode(
+            32,
+            modbus.OutputPowerOnMode.RESTORE_LAST_STATE,
+        )
+        await backend.set_communication_timeout_s(32, 15)
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("set_input_mode", 0, modbus.InputMode.MAPPING_MATRIX_EDGE),
+                ("set_debounce_ms", 0, 75),
+                ("set_long_press_ms", 0, 1200),
+                ("set_second_press_wait_ms", 0, 350),
+                ("set_safe_state", 6, modbus.SafeState.ON),
+                (
+                    "set_safe_mode_action",
+                    3,
+                    modbus.SafeModeAction.SET_SAFE_STATE,
+                ),
+                (
+                    "set_safe_mode_input_control",
+                    6,
+                    modbus.SafeModeInputControl.ALLOW_ONLY_IN_SAFE_MODE,
+                ),
+                (
+                    "set_output_power_on_mode",
+                    modbus.OutputPowerOnMode.RESTORE_LAST_STATE,
+                ),
+                ("set_communication_timeout_s", 15),
+            ],
+        )
+
+    async def test_missing_device_raises_home_assistant_error(self) -> None:
+        backend = integration.OpenWBSettingsBackend({})
+
+        with self.assertRaisesRegex(HomeAssistantError, "not configured"):
+            await backend.read_basic_settings(32)
+
+    async def test_modbus_error_raises_home_assistant_error(self) -> None:
+        client = FakeSettingsClient()
+        client.error = modbus.WBMR6CModbusConnectionError("boom")
+        backend = integration.OpenWBSettingsBackend({32: client})
+
+        with self.assertRaisesRegex(HomeAssistantError, "Unable to read settings"):
+            await backend.read_basic_settings(32)
+
+    async def test_invalid_setting_raises_home_assistant_error_before_modbus_write(
+        self,
+    ) -> None:
+        transport = modbus.FakeModbusTransport()
+        client = modbus.WBMR6CModbus(transport, device_id=32)
+        backend = integration.OpenWBSettingsBackend({32: client})
+
+        with self.assertRaisesRegex(HomeAssistantError, "Invalid openWB settings"):
+            await backend.set_debounce_ms(32, 1, 2001)
+
+        self.assertEqual(transport.calls, [])
 
 
 class FakeSwitchCoordinator:
