@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
 from ..wb_mr6c_modbus import (
     InputMode,
+    MappingAction,
+    MappingEvent,
     ModbusTransport,
     OutputPowerOnMode,
     PressCounterEvent,
@@ -179,6 +181,36 @@ class OpenWBDeviceClient(Protocol):
         self, output: int, control: SafeModeInputControl | int
     ) -> None:
         """Set one safe-mode input-control behavior."""
+        ...
+
+    async def read_mapping_action(
+        self, event: MappingEvent | int, input_number: int, output: int
+    ) -> int:
+        """Read one mapping matrix cell."""
+        ...
+
+    async def set_mapping_action(
+        self,
+        event: MappingEvent | int,
+        input_number: int,
+        output: int,
+        action: MappingAction | int,
+    ) -> None:
+        """Write one mapping matrix cell."""
+        ...
+
+    async def read_mapping_matrix(
+        self, event: MappingEvent | int
+    ) -> dict[tuple[int, int], int]:
+        """Read one full mapping matrix."""
+        ...
+
+    async def write_mapping_matrix(
+        self,
+        event: MappingEvent | int,
+        desired_matrix: Mapping[tuple[int, int], MappingAction | int],
+    ) -> None:
+        """Apply one mapping matrix, writing only changed cells."""
         ...
 
 

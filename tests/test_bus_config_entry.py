@@ -438,6 +438,7 @@ _STUBBED_MODULE_NAMES = (
     "custom_components.openwb.config_flow",
     "custom_components.openwb.const",
     "custom_components.openwb.event",
+    "custom_components.openwb.mapping_matrix",
     "custom_components.openwb.settings",
     "custom_components.openwb.switch",
     "custom_components.openwb.wb_mr6c_modbus",
@@ -1156,6 +1157,18 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             integration.OpenWBSettingsBackend,
         )
         self.assertIs(entry.runtime_data.settings.clients, entry.runtime_data.clients)
+        self.assertIsInstance(
+            entry.runtime_data.mapping_matrix,
+            integration.OpenWBMappingMatrixBackend,
+        )
+        self.assertIs(
+            entry.runtime_data.mapping_matrix.clients,
+            entry.runtime_data.clients,
+        )
+        self.assertIs(
+            entry.runtime_data.mapping_matrix.device_metadata,
+            entry.runtime_data.device_metadata,
+        )
         self.assertEqual(entry.runtime_data.coordinator.data, {})
         self.assertEqual(
             entry.runtime_data.coordinator.listeners,
@@ -1931,6 +1944,231 @@ class SettingsBackendTest(unittest.IsolatedAsyncioTestCase):
             await backend.set_debounce_ms(32, 1, 2001)
 
         self.assertEqual(transport.calls, [])
+
+
+def _complete_mapping_matrix(action: int = 0) -> dict[tuple[int, int], int]:
+    return {
+        (input_number, output): action
+        for input_number in modbus.INPUTS
+        for output in modbus.OUTPUTS
+    }
+
+
+class FakeMappingClient:
+    def __init__(self) -> None:
+        self.matrix = _complete_mapping_matrix()
+        self.matrix[(1, 1)] = int(modbus.MappingAction.TOGGLE)
+        self.calls: list[tuple[Any, ...]] = []
+        self.error: Exception | None = None
+
+    async def read_mapping_action(
+        self, event: object, input_number: int, output: int
+    ) -> int:
+        await self._maybe_raise()
+        self.calls.append(("read_mapping_action", event, input_number, output))
+        return self.matrix[(input_number, output)]
+
+    async def set_mapping_action(
+        self, event: object, input_number: int, output: int, action: object
+    ) -> None:
+        await self._call("set_mapping_action", event, input_number, output, action)
+
+    async def read_mapping_matrix(self, event: object) -> dict[tuple[int, int], int]:
+        await self._maybe_raise()
+        self.calls.append(("read_mapping_matrix", event))
+        return dict(self.matrix)
+
+    async def write_mapping_matrix(
+        self,
+        event: object,
+        desired_matrix: dict[tuple[int, int], object],
+    ) -> None:
+        await self._call("write_mapping_matrix", event, desired_matrix)
+
+    async def _call(self, method: str, *args: object) -> None:
+        await self._maybe_raise()
+        self.calls.append((method, *args))
+
+    async def _maybe_raise(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+
+class MappingMatrixBackendTest(unittest.IsolatedAsyncioTestCase):
+    async def test_read_mapping_action_and_matrix_use_on_demand_client(self) -> None:
+        client = FakeMappingClient()
+        backend = integration.OpenWBMappingMatrixBackend(
+            {32: client},
+            {32: _metadata()},
+        )
+
+        action = await backend.read_mapping_action(
+            32,
+            modbus.MappingEvent.SHORT_PRESS,
+            1,
+            1,
+        )
+        matrix = await backend.read_mapping_matrix(
+            32,
+            modbus.MappingEvent.SHORT_PRESS,
+        )
+
+        self.assertEqual(action, modbus.MappingAction.TOGGLE)
+        self.assertEqual(matrix[(1, 1)], modbus.MappingAction.TOGGLE)
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "read_mapping_action",
+                    modbus.MappingEvent.SHORT_PRESS,
+                    1,
+                    1,
+                ),
+                ("read_mapping_matrix", modbus.MappingEvent.SHORT_PRESS),
+            ],
+        )
+
+    async def test_writes_use_explicit_mapping_client_methods(self) -> None:
+        client = FakeMappingClient()
+        backend = integration.OpenWBMappingMatrixBackend(
+            {32: client},
+            {32: _metadata()},
+        )
+        desired = _complete_mapping_matrix(int(modbus.MappingAction.ON))
+
+        await backend.set_mapping_action(
+            32,
+            modbus.MappingEvent.SHORT_PRESS,
+            1,
+            2,
+            modbus.MappingAction.OFF,
+        )
+        await backend.write_mapping_matrix(
+            32,
+            modbus.MappingEvent.LONG_PRESS,
+            desired,
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                (
+                    "set_mapping_action",
+                    modbus.MappingEvent.SHORT_PRESS,
+                    1,
+                    2,
+                    modbus.MappingAction.OFF,
+                ),
+                ("write_mapping_matrix", modbus.MappingEvent.LONG_PRESS, desired),
+            ],
+        )
+
+    async def test_unsupported_device_rejects_before_client_io(self) -> None:
+        client = FakeMappingClient()
+        backend = integration.OpenWBMappingMatrixBackend(
+            {32: client},
+            {
+                32: _metadata(
+                    supports_mapping_matrix=False,
+                    output_numbers=(),
+                )
+            },
+        )
+
+        with self.assertRaisesRegex(HomeAssistantError, "does not support"):
+            await backend.read_mapping_matrix(32, modbus.MappingEvent.SHORT_PRESS)
+
+        self.assertEqual(client.calls, [])
+
+    async def test_missing_device_raises_home_assistant_error(self) -> None:
+        backend = integration.OpenWBMappingMatrixBackend({}, {})
+
+        with self.assertRaisesRegex(HomeAssistantError, "not configured"):
+            await backend.read_mapping_matrix(32, modbus.MappingEvent.SHORT_PRESS)
+
+    async def test_modbus_error_raises_home_assistant_error(self) -> None:
+        client = FakeMappingClient()
+        client.error = modbus.WBMR6CModbusConnectionError("boom")
+        backend = integration.OpenWBMappingMatrixBackend(
+            {32: client},
+            {32: _metadata()},
+        )
+
+        with self.assertRaisesRegex(HomeAssistantError, "Unable to read mapping"):
+            await backend.read_mapping_matrix(32, modbus.MappingEvent.SHORT_PRESS)
+
+    async def test_invalid_matrix_value_raises_before_modbus_call(self) -> None:
+        transport = modbus.FakeModbusTransport()
+        client = modbus.WBMR6CModbus(transport, device_id=32)
+        backend = integration.OpenWBMappingMatrixBackend(
+            {32: client},
+            {32: _metadata()},
+        )
+        desired = _complete_mapping_matrix()
+        desired[(1, 1)] = 4
+
+        with self.assertRaisesRegex(HomeAssistantError, "Invalid openWB mapping"):
+            await backend.write_mapping_matrix(
+                32,
+                modbus.MappingEvent.SHORT_PRESS,
+                desired,
+            )
+
+        self.assertEqual(transport.calls, [])
+
+    async def test_write_mapping_matrix_writes_only_changed_cells(self) -> None:
+        transport = modbus.FakeModbusTransport()
+        current = _complete_mapping_matrix()
+        current[(1, 1)] = int(modbus.MappingAction.OFF)
+        current[(0, 6)] = int(modbus.MappingAction.TOGGLE)
+        for (input_number, output), action in current.items():
+            transport.set_holding_register(
+                modbus.mapping_register_address(
+                    modbus.MappingEvent.SHORT_PRESS,
+                    input_number,
+                    output,
+                ),
+                action,
+                device_id=32,
+            )
+
+        desired = dict(current)
+        desired[(1, 1)] = int(modbus.MappingAction.ON)
+        desired[(2, 3)] = int(modbus.MappingAction.OFF)
+        client = modbus.WBMR6CModbus(transport, device_id=32)
+        backend = integration.OpenWBMappingMatrixBackend(
+            {32: client},
+            {32: _metadata()},
+        )
+        transport.calls.clear()
+
+        await backend.write_mapping_matrix(
+            32,
+            modbus.MappingEvent.SHORT_PRESS,
+            desired,
+        )
+
+        self.assertEqual(
+            transport.writes,
+            [
+                ("write_register", 544, int(modbus.MappingAction.ON), 32),
+                ("write_register", 554, int(modbus.MappingAction.OFF), 32),
+            ],
+        )
+        self.assertEqual(
+            transport.calls,
+            [
+                (
+                    "read_holding_registers",
+                    modbus.REG_MAPPING_SHORT_PRESS_BASE,
+                    modbus.MAPPING_MATRIX_ROW_SPACING
+                    * modbus.MAPPING_MATRIX_ROW_SPACING,
+                    32,
+                ),
+                ("write_register", 544, int(modbus.MappingAction.ON), 32),
+                ("write_register", 554, int(modbus.MappingAction.OFF), 32),
+            ],
+        )
 
 
 class FakeSwitchCoordinator:
