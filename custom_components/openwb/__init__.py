@@ -477,3 +477,11 @@ def device_name(model: str | None, device_id: int) -> str:
 
 
 _UNKNOWN_DEVICE_METADATA = unknown_device_metadata()
+
+
+async def async_setup(hass: HomeAssistant, _config: Mapping[str, object]) -> bool:
+    """Set up integration-level frontend assets and websocket commands."""
+    from .frontend import async_setup_frontend
+
+    await async_setup_frontend(hass)
+    return True

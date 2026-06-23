@@ -38,6 +38,9 @@ Supported modules:
 5. Restart Home Assistant.
 6. Go to **Settings** -> **Devices & services** -> **Add integration** and search for **openWB**.
 
+The mapping-matrix dashboard is available from the Home Assistant sidebar as
+**openWB** after the integration is loaded.
+
 ## Development Installation
 
 Copy `custom_components/openwb` into your Home Assistant `custom_components` directory and restart Home Assistant:
