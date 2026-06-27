@@ -28,7 +28,14 @@ from .devices import device_model_display_name, device_name
 from .devices.base import OpenWBDeviceMetadata
 from .mapping_matrix import OpenWBMappingMatrixBackend
 from .settings import OpenWBSettingsBackend
-from .wb_mr6c_modbus import INPUTS, OUTPUTS, InputMode, MappingAction, MappingEvent
+from .wb_mr6c_modbus import (
+    INPUT_0,
+    INPUTS,
+    OUTPUTS,
+    InputMode,
+    MappingAction,
+    MappingEvent,
+)
 
 PANEL_URL_PATH = DOMAIN
 PANEL_WEB_COMPONENT = "openwb-mapping-panel"
@@ -55,11 +62,19 @@ _MAPPING_ACTION_SCHEMA = vol.All(
         )
     ),
 )
+_INPUT_MODE_SCHEMA = vol.All(
+    vol.Coerce(int),
+    vol.In(tuple(int(mode) for mode in InputMode if mode != InputMode.DISABLED)),
+)
 _MAPPING_RULE_SCHEMA = {
     vol.Required("input_number"): _INPUT_NUMBER_SCHEMA,
     vol.Required("event"): _MAPPING_EVENT_SCHEMA,
     vol.Required("action"): _MAPPING_ACTION_SCHEMA,
     vol.Required("outputs"): vol.All([_OUTPUT_SCHEMA], vol.Length(min=1)),
+}
+_INPUT_MODE_RULE_SCHEMA = {
+    vol.Required("input_number"): _INPUT_NUMBER_SCHEMA,
+    vol.Required("mode"): _INPUT_MODE_SCHEMA,
 }
 _MAPPING_BUTTON_EVENTS = frozenset(
     (
@@ -81,6 +96,13 @@ class MappingRule(TypedDict):
     event: int
     action: int
     outputs: list[int]
+
+
+class InputModeRule(TypedDict):
+    """Compact frontend input mode rule."""
+
+    input_number: int
+    mode: int
 
 
 class OpenWBFrontendRuntime(Protocol):
@@ -205,6 +227,7 @@ async def websocket_read_mapping_matrix(
         vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
         vol.Required("device_id"): _DEVICE_ID_SCHEMA,
         vol.Required("mappings"): [_MAPPING_RULE_SCHEMA],
+        vol.Required("input_modes"): [_INPUT_MODE_RULE_SCHEMA],
     }
 )
 @require_admin
@@ -238,12 +261,17 @@ async def websocket_write_mapping_matrix(
 
     matrices = _empty_matrices()
     mapping_rules = _message_mapping_rules(msg)
-    input_modes = _input_modes_for_mapping_rules(mapping_rules)
-    if input_modes is None:
+    input_modes = _message_input_modes(msg)
+    input_numbers = set(metadata.input_numbers)
+    if (
+        input_modes is None
+        or set(input_modes) != input_numbers
+        or not _input_modes_match_mapping_rules(mapping_rules, input_modes)
+    ):
         connection.send_error(
             msg_id,
             ERR_INVALID_FORMAT,
-            "One openWB input cannot mix button and edge mapping events",
+            "openWB input mode does not match mapping events",
         )
         return
 
@@ -333,25 +361,43 @@ def _serialize_input_modes(
     ]
 
 
-def _input_modes_for_mapping_rules(
+def _input_modes_match_mapping_rules(
     mapping_rules: list[MappingRule],
-) -> dict[int, InputMode] | None:
-    input_modes: dict[int, InputMode] = {}
+    input_modes: dict[int, InputMode],
+) -> bool:
+    if not _input_modes_are_valid(input_modes):
+        return False
+
     for mapping in mapping_rules:
         event = MappingEvent(mapping["event"])
         input_number = mapping["input_number"]
-        if event in _MAPPING_BUTTON_EVENTS:
-            mode = InputMode.MAPPING_MATRIX_BUTTON
-        elif event in _MAPPING_EDGE_EVENTS:
-            mode = InputMode.MAPPING_MATRIX_EDGE
-        else:
-            return None
+        mode = _input_mode_for_mapping_event(event)
+        if mode is None:
+            return False
 
-        existing_mode = input_modes.get(input_number)
-        if existing_mode is not None and existing_mode is not mode:
-            return None
-        input_modes[input_number] = mode
-    return input_modes
+        if input_modes.get(input_number) is not mode:
+            return False
+    return True
+
+
+def _input_mode_for_mapping_event(event: MappingEvent) -> InputMode | None:
+    if event in _MAPPING_BUTTON_EVENTS:
+        return InputMode.MAPPING_MATRIX_BUTTON
+    if event in _MAPPING_EDGE_EVENTS:
+        return InputMode.MAPPING_MATRIX_EDGE
+    return None
+
+
+def _input_modes_are_valid(input_modes: dict[int, InputMode]) -> bool:
+    for input_number, mode in input_modes.items():
+        if mode is InputMode.DISABLED:
+            return False
+        if input_number == INPUT_0 and mode in {
+            InputMode.MOMENTARY,
+            InputMode.LATCHING,
+        }:
+            return False
+    return True
 
 
 def _empty_matrices() -> dict[MappingEvent, dict[tuple[int, int], MappingAction]]:
@@ -392,3 +438,15 @@ def _message_int(msg: dict[str, object], key: str) -> int:
 
 def _message_mapping_rules(msg: dict[str, object]) -> list[MappingRule]:
     return cast(list[MappingRule], msg["mappings"])
+
+
+def _message_input_modes(msg: dict[str, object]) -> dict[int, InputMode] | None:
+    raw_input_modes = msg["input_modes"]
+    input_modes: dict[int, InputMode] = {}
+    for item in cast(list[InputModeRule], raw_input_modes):
+        input_number = item["input_number"]
+        input_mode = InputMode(item["mode"])
+        if input_number in input_modes and input_modes[input_number] is not input_mode:
+            return None
+        input_modes[input_number] = input_mode
+    return input_modes

@@ -1,14 +1,20 @@
 import {
   ACTION_NONE,
   ACTION_OPTIONS,
-  ACTIVE_LEGACY_INPUT_MODES,
   BUTTON_EVENT_VALUES,
   DEFAULT_ACTION,
   DEFAULT_EVENT,
   EDGE_EVENT_VALUES,
   EVENT_OPTIONS,
-  INPUT_MODE_LABEL_KEYS,
+  INPUT_MODE_DISABLE_ALL_OUTPUTS,
+  INPUT_MODE_FREQUENCY,
+  INPUT_MODE_HELP_KEYS,
+  INPUT_MODE_LATCHING,
   MAPPING_MATRIX_INPUT_MODES,
+  INPUT_MODE_MAPPING_MATRIX_BUTTON,
+  INPUT_MODE_MAPPING_MATRIX_EDGE,
+  INPUT_MODE_OPTIONS,
+  INPUT_MODE_MOMENTARY,
 } from "./constants.js";
 import {
   cloneCards,
@@ -149,8 +155,10 @@ class OpenWBMappingPanel extends HTMLElement {
     }
 
     let mappings;
+    let inputModes;
     try {
       mappings = this._mappingsFromCards();
+      inputModes = this._inputModesFromCards();
     } catch (error) {
       this._error = this._errorMessage(error);
       this._render();
@@ -168,7 +176,13 @@ class OpenWBMappingPanel extends HTMLElement {
         entry_id: device.entry_id,
         device_id: device.device_id,
         mappings,
+        input_modes: inputModes,
       });
+      this._cards = this._cards.map((card) =>
+        MAPPING_MATRIX_INPUT_MODES.has(Number(card.inputMode))
+          ? card
+          : { ...card, rules: [] }
+      );
       this._originalCards = cloneCards(this._cards);
       this._dirty = false;
       this._statusKey = "status.saved";
@@ -194,14 +208,6 @@ class OpenWBMappingPanel extends HTMLElement {
     const action = button.dataset.action;
     if (action === "reload") {
       this._loadConfig();
-      return;
-    }
-    if (action === "add-card") {
-      this._addCard();
-      return;
-    }
-    if (action === "delete-card") {
-      this._deleteCard(button);
       return;
     }
     if (action === "add-rule") {
@@ -232,6 +238,11 @@ class OpenWBMappingPanel extends HTMLElement {
       return;
     }
 
+    if (target.matches("select[data-input-mode]")) {
+      this._updateInputMode(target);
+      return;
+    }
+
     if (target.matches("select[data-field]")) {
       this._updateRuleSelect(target);
       return;
@@ -256,42 +267,42 @@ class OpenWBMappingPanel extends HTMLElement {
     await this._loadSelectedDevice();
   }
 
-  _addCard() {
-    const device = this._selectedDevice();
-    if (!device) {
-      return;
-    }
-
-    const usedInputs = new Set(this._cards.map((card) => card.inputNumber));
-    const inputNumber = this._inputNumbers(device).find(
-      (candidate) => !usedInputs.has(candidate),
-    );
-    if (inputNumber === undefined) {
-      return;
-    }
-
-    this._cards = [
-      ...this._cards,
-      {
-        inputNumber,
-        rules: [this._newRule()],
-      },
-    ].sort((left, right) => left.inputNumber - right.inputNumber);
-    this._markDirty();
-  }
-
-  _deleteCard(element) {
+  _updateInputMode(element) {
     const cardIndex = this._cardIndex(element);
     if (cardIndex < 0) {
       return;
     }
-    this._cards = this._cards.filter((_, index) => index !== cardIndex);
+
+    const inputMode = normalizeNumber(element.value);
+    this._cards = this._cards.map((card, index) => {
+      if (index !== cardIndex) {
+        return card;
+      }
+
+      const nextCard = { ...card, inputMode };
+      if (!MAPPING_MATRIX_INPUT_MODES.has(inputMode)) {
+        return nextCard;
+      }
+
+      const matchingRules = nextCard.rules.filter((rule) =>
+        this._ruleMatchesInputMode(rule, inputMode)
+      );
+      return {
+        ...nextCard,
+        rules: matchingRules.length
+          ? matchingRules
+          : [this._newRule({ ...nextCard, rules: [] })],
+      };
+    });
     this._markDirty();
   }
 
   _addRule(element) {
     const cardIndex = this._cardIndex(element);
     if (cardIndex < 0) {
+      return;
+    }
+    if (!MAPPING_MATRIX_INPUT_MODES.has(Number(this._cards[cardIndex].inputMode))) {
       return;
     }
     this._cards = this._cards.map((card, index) =>
@@ -399,16 +410,12 @@ class OpenWBMappingPanel extends HTMLElement {
         Number(item.mode),
       ]),
     );
-    const mappingModeInputs = new Set(
-      (Array.isArray(inputModes) ? inputModes : [])
-        .filter((item) => MAPPING_MATRIX_INPUT_MODES.has(Number(item.mode)))
-        .map((item) => Number(item.input_number)),
-    );
     const cards = [];
 
     for (const inputNumber of inputNumbers) {
       const rules = [];
-      const inputMode = inputModeByInput.get(inputNumber);
+      const inputMode = inputModeByInput.get(inputNumber) ??
+        this._defaultInputMode(inputNumber);
       for (const eventOption of EVENT_OPTIONS) {
         const cells = Array.isArray(matrices[String(eventOption.value)])
           ? matrices[String(eventOption.value)]
@@ -447,17 +454,11 @@ class OpenWBMappingPanel extends HTMLElement {
         }
       }
 
-      if (
-        rules.length ||
-        mappingModeInputs.has(inputNumber) ||
-        ACTIVE_LEGACY_INPUT_MODES.has(inputMode)
-      ) {
-        cards.push({
-          inputNumber,
-          inputMode: inputMode ?? null,
-          rules,
-        });
-      }
+      cards.push({
+        inputNumber,
+        inputMode,
+        rules,
+      });
     }
 
     return cards;
@@ -469,6 +470,10 @@ class OpenWBMappingPanel extends HTMLElement {
     const eventTypeByInput = new Map();
 
     for (const card of this._cards) {
+      if (!MAPPING_MATRIX_INPUT_MODES.has(Number(card.inputMode))) {
+        continue;
+      }
+
       for (const rule of card.rules) {
         const outputs = this._outputNumbers(this._selectedDevice()).filter((output) =>
           rule.outputs.includes(output)
@@ -488,6 +493,9 @@ class OpenWBMappingPanel extends HTMLElement {
         }
 
         const eventType = this._mappingEventType(rule.event);
+        if (!this._ruleMatchesInputMode(rule, Number(card.inputMode))) {
+          throw new Error(this._t("validation.modeEventMismatch"));
+        }
         const existingEventType = eventTypeByInput.get(card.inputNumber);
         if (existingEventType && existingEventType !== eventType) {
           throw new Error(this._t("validation.mixedEventTypes"));
@@ -506,6 +514,13 @@ class OpenWBMappingPanel extends HTMLElement {
     return mappings;
   }
 
+  _inputModesFromCards() {
+    return this._cards.map((card) => ({
+      input_number: card.inputNumber,
+      mode: Number(card.inputMode),
+    }));
+  }
+
   _newRule(card = undefined) {
     const firstOutput = this._outputNumbers(this._selectedDevice())[0];
     return {
@@ -517,11 +532,39 @@ class OpenWBMappingPanel extends HTMLElement {
   }
 
   _defaultEventForCard(card) {
+    if (Number(card?.inputMode) === INPUT_MODE_MAPPING_MATRIX_EDGE) {
+      return 864;
+    }
+    if (Number(card?.inputMode) === INPUT_MODE_MAPPING_MATRIX_BUTTON) {
+      return DEFAULT_EVENT;
+    }
     if (card?.rules?.length) {
       const firstEvent = card.rules[0].event;
       return EDGE_EVENT_VALUES.has(Number(firstEvent)) ? 864 : DEFAULT_EVENT;
     }
     return DEFAULT_EVENT;
+  }
+
+  _ruleMatchesInputMode(rule, inputMode) {
+    const event = Number(rule.event);
+    if (inputMode === INPUT_MODE_MAPPING_MATRIX_EDGE) {
+      return EDGE_EVENT_VALUES.has(event);
+    }
+    if (inputMode === INPUT_MODE_MAPPING_MATRIX_BUTTON) {
+      return BUTTON_EVENT_VALUES.has(event);
+    }
+    return false;
+  }
+
+  _eventOptionsForInputMode(inputMode) {
+    const mode = Number(inputMode);
+    if (mode === INPUT_MODE_MAPPING_MATRIX_EDGE) {
+      return EVENT_OPTIONS.filter((option) => EDGE_EVENT_VALUES.has(option.value));
+    }
+    if (mode === INPUT_MODE_MAPPING_MATRIX_BUTTON) {
+      return EVENT_OPTIONS.filter((option) => BUTTON_EVENT_VALUES.has(option.value));
+    }
+    return EVENT_OPTIONS;
   }
 
   _mappingEventType(event) {
@@ -567,6 +610,21 @@ class OpenWBMappingPanel extends HTMLElement {
       .sort((left, right) => left - right);
   }
 
+  _defaultInputMode(inputNumber) {
+    return Number(inputNumber) === 0
+      ? INPUT_MODE_DISABLE_ALL_OUTPUTS
+      : INPUT_MODE_LATCHING;
+  }
+
+  _inputModeOptions(inputNumber) {
+    if (Number(inputNumber) === 0) {
+      return INPUT_MODE_OPTIONS.filter((option) =>
+        ![INPUT_MODE_MOMENTARY, INPUT_MODE_LATCHING].includes(option.value)
+      );
+    }
+    return INPUT_MODE_OPTIONS;
+  }
+
   _cardIndex(element) {
     const card = element.closest("[data-card-index]");
     return card ? normalizeNumber(card.dataset.cardIndex) : -1;
@@ -592,10 +650,6 @@ class OpenWBMappingPanel extends HTMLElement {
 
     const devices = this._config.devices || [];
     const selectedDevice = this._selectedDevice();
-    const usedInputs = new Set(this._cards.map((card) => card.inputNumber));
-    const canAddCard = selectedDevice
-      ? this._inputNumbers(selectedDevice).some((input) => !usedInputs.has(input))
-      : false;
 
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
@@ -614,7 +668,7 @@ class OpenWBMappingPanel extends HTMLElement {
 
         ${
           devices.length
-            ? this._renderGrid(canAddCard)
+            ? this._renderGrid()
             : `<div class="empty">${escapeHtml(this._t("empty.noMappingDevices"))}</div>`
         }
 
@@ -656,11 +710,10 @@ class OpenWBMappingPanel extends HTMLElement {
     `;
   }
 
-  _renderGrid(canAddCard) {
+  _renderGrid() {
     return `
       <div class="grid">
         ${this._cards.map((card, index) => this._renderCard(card, index)).join("")}
-        ${canAddCard ? this._renderAddCard() : ""}
       </div>
     `;
   }
@@ -670,40 +723,106 @@ class OpenWBMappingPanel extends HTMLElement {
       <article class="input-card" data-card-index="${cardIndex}">
         <header class="card-header">
           <h2>${escapeHtml(this._t("card.inputTitle", { number: card.inputNumber }))}</h2>
-          <button class="icon-button danger" data-action="delete-card" title="${escapeHtml(this._t("button.delete"))}" aria-label="${escapeHtml(this._t("button.delete"))}">
-            <ha-icon icon="mdi:delete-outline"></ha-icon>
-          </button>
         </header>
+        ${this._renderInputModeControl(card)}
         <div class="rules">
-          ${this._renderInputModeNotice(card)}
-          ${card.rules.map((rule, index) => this._renderRule(rule, index)).join("")}
-          <button class="add-rule" data-action="add-rule">
-            <ha-icon icon="mdi:plus"></ha-icon>
-            <span>${escapeHtml(this._t("button.add"))}</span>
-          </button>
+          ${this._renderCardRules(card)}
         </div>
       </article>
     `;
   }
 
-  _renderInputModeNotice(card) {
-    if (MAPPING_MATRIX_INPUT_MODES.has(Number(card.inputMode))) {
-      return "";
-    }
+  _renderInputModeControl(card) {
+    const helpKey = INPUT_MODE_HELP_KEYS[Number(card.inputMode)];
+    const helpText = helpKey ? this._t(helpKey) : "";
+    return `
+      <label class="mode-control">
+        <span>${escapeHtml(this._t("field.inputMode"))}</span>
+        <div class="mode-row">
+          <select data-input-mode>
+            ${this._inputModeOptions(card.inputNumber).map((option) => `
+              <option value="${option.value}" ${Number(card.inputMode) === option.value ? "selected" : ""}>
+                ${escapeHtml(this._t(option.labelKey))}
+              </option>
+            `).join("")}
+          </select>
+          <span class="mode-help" title="${escapeHtml(helpText)}" aria-label="${escapeHtml(helpText)}">
+            <ha-icon icon="mdi:help-circle-outline"></ha-icon>
+          </span>
+        </div>
+      </label>
+    `;
+  }
 
-    const labelKey = INPUT_MODE_LABEL_KEYS[Number(card.inputMode)];
-    if (!labelKey) {
-      return "";
+  _renderCardRules(card) {
+    if (!MAPPING_MATRIX_INPUT_MODES.has(Number(card.inputMode))) {
+      return this._renderLegacyRule(card);
     }
 
     return `
-      <div class="mode-note">
-        ${escapeHtml(this._t("inputMode.current", { mode: this._t(labelKey) }))}
+      ${card.rules.map((rule, index) => this._renderRule(card, rule, index)).join("")}
+      <button class="add-rule" data-action="add-rule">
+        <ha-icon icon="mdi:plus"></ha-icon>
+        <span>${escapeHtml(this._t("button.add"))}</span>
+      </button>
+    `;
+  }
+
+  _renderLegacyRule(card) {
+    const behavior = this._legacyBehavior(card);
+    return `
+      <div class="rule read-only-rule">
+        <div class="control">
+          <span>${escapeHtml(this._t("field.pressType"))}</span>
+          <div class="readonly-value">${escapeHtml(behavior.event)}</div>
+        </div>
+        <div class="control">
+          <span>${escapeHtml(this._t("field.action"))}</span>
+          <div class="readonly-value">${escapeHtml(behavior.action)}</div>
+        </div>
+        <div class="control">
+          <span>${escapeHtml(this._t("field.relay"))}</span>
+          <div class="readonly-value">${escapeHtml(behavior.relay)}</div>
+        </div>
       </div>
     `;
   }
 
-  _renderRule(rule, ruleIndex) {
+  _legacyBehavior(card) {
+    const mode = Number(card.inputMode);
+    if ([INPUT_MODE_MOMENTARY, INPUT_MODE_LATCHING].includes(mode)) {
+      return {
+        event: this._t("event.shortPress"),
+        action: this._t("action.toggle"),
+        relay: this._t("relay.item", { number: card.inputNumber }),
+      };
+    }
+
+    if (mode === INPUT_MODE_DISABLE_ALL_OUTPUTS) {
+      return {
+        event: this._t("event.risingEdge"),
+        action: this._t("action.off"),
+        relay: this._t("relay.all"),
+      };
+    }
+
+    if (mode === INPUT_MODE_FREQUENCY) {
+      return {
+        event: this._t("event.notApplicable"),
+        action: this._t("action.none"),
+        relay: this._t("relay.none"),
+      };
+    }
+
+    return {
+      event: this._t("event.notApplicable"),
+      action: this._t("action.none"),
+      relay: this._t("relay.none"),
+    };
+  }
+
+  _renderRule(card, rule, ruleIndex) {
+    const eventOptions = this._eventOptionsForInputMode(card.inputMode);
     return `
       <div class="rule" data-rule-index="${ruleIndex}">
         <button class="icon-button rule-delete" data-action="delete-rule" title="${escapeHtml(this._t("button.delete"))}" aria-label="${escapeHtml(this._t("button.delete"))}">
@@ -712,7 +831,7 @@ class OpenWBMappingPanel extends HTMLElement {
         <label class="control">
           <span>${escapeHtml(this._t("field.pressType"))}</span>
           <select data-field="event">
-            ${EVENT_OPTIONS.map((option) => `
+            ${eventOptions.map((option) => `
               <option value="${option.value}" ${Number(rule.event) === option.value ? "selected" : ""}>${escapeHtml(this._t(option.labelKey))}</option>
             `).join("")}
           </select>
@@ -758,14 +877,6 @@ class OpenWBMappingPanel extends HTMLElement {
           `).join("")}
         </div>
       </details>
-    `;
-  }
-
-  _renderAddCard() {
-    return `
-      <button class="add-card" data-action="add-card" aria-label="${escapeHtml(this._t("button.add"))}">
-        <ha-icon icon="mdi:plus"></ha-icon>
-      </button>
     `;
   }
 
@@ -843,6 +954,7 @@ class OpenWBMappingPanel extends HTMLElement {
       }
 
       .device-select select,
+      .mode-control select,
       .control select,
       .relay-picker summary {
         width: 100%;
@@ -863,8 +975,7 @@ class OpenWBMappingPanel extends HTMLElement {
         align-items: stretch;
       }
 
-      .input-card,
-      .add-card {
+      .input-card {
         min-height: 360px;
         border: 1px solid var(--divider-color);
         border-radius: 8px;
@@ -891,6 +1002,28 @@ class OpenWBMappingPanel extends HTMLElement {
         gap: 12px;
       }
 
+      .mode-control {
+        display: grid;
+        gap: 6px;
+        color: var(--secondary-text-color);
+        font-size: 12px;
+      }
+
+      .mode-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 40px;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .mode-help {
+        display: inline-grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        color: var(--secondary-text-color);
+      }
+
       .rule {
         position: relative;
         display: grid;
@@ -899,17 +1032,6 @@ class OpenWBMappingPanel extends HTMLElement {
         border: 1px solid var(--divider-color);
         border-radius: 8px;
         background: var(--secondary-background-color);
-      }
-
-      .mode-note {
-        min-height: 40px;
-        padding: 10px 12px;
-        border: 1px solid var(--divider-color);
-        border-radius: 8px;
-        background: color-mix(in srgb, var(--primary-color) 8%, transparent);
-        color: var(--secondary-text-color);
-        font-size: 13px;
-        line-height: 1.4;
       }
 
       .rule-delete {
@@ -926,11 +1048,26 @@ class OpenWBMappingPanel extends HTMLElement {
         font-size: 12px;
       }
 
+      .read-only-rule .control {
+        padding-right: 0;
+      }
+
       .control select,
+      .readonly-value,
       .relay-picker,
       .relay-picker summary {
         color: var(--primary-text-color);
         font-size: 14px;
+      }
+
+      .readonly-value {
+        display: flex;
+        align-items: center;
+        min-height: 40px;
+        border: 1px solid var(--divider-color);
+        border-radius: 6px;
+        padding: 0 10px;
+        background: var(--card-background-color);
       }
 
       .relay-picker {
@@ -1018,18 +1155,6 @@ class OpenWBMappingPanel extends HTMLElement {
         border-radius: 6px;
         background: color-mix(in srgb, var(--primary-color) 12%, transparent);
         color: var(--primary-color);
-      }
-
-      .add-card {
-        display: grid;
-        place-items: center;
-        width: 100%;
-        height: 100%;
-        color: var(--primary-color);
-      }
-
-      .add-card ha-icon {
-        --mdc-icon-size: 56px;
       }
 
       .banner,
