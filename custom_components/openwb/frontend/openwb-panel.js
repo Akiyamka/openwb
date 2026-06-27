@@ -39,6 +39,8 @@ class OpenWBMappingPanel extends HTMLElement {
     this._cards = [];
     this._originalCards = [];
     this._ruleId = 1;
+    this._openRelayPickerKey = "";
+    this._handleDocumentClick = (event) => this._closeRelayPickerFromEvent(event);
 
     this.shadowRoot.addEventListener("click", (event) => this._handleClick(event));
     this.shadowRoot.addEventListener("change", (event) => this._handleChange(event));
@@ -71,7 +73,12 @@ class OpenWBMappingPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    document.addEventListener("click", this._handleDocumentClick);
     this._render();
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener("click", this._handleDocumentClick);
   }
 
   async _loadConfig() {
@@ -136,6 +143,7 @@ class OpenWBMappingPanel extends HTMLElement {
         result.input_modes || [],
         device,
       );
+      this._openRelayPickerKey = "";
       this._originalCards = cloneCards(this._cards);
       this._dirty = false;
     } catch (error) {
@@ -199,6 +207,16 @@ class OpenWBMappingPanel extends HTMLElement {
     if (!(target instanceof Element)) {
       return;
     }
+
+    const relayPicker = target.closest(".relay-picker");
+    if (relayPicker) {
+      if (target.closest("summary")) {
+        this._toggleRelayPicker(relayPicker);
+      }
+      return;
+    }
+
+    this._closeRelayPicker();
 
     const button = target.closest("[data-action]");
     if (!button) {
@@ -360,6 +378,10 @@ class OpenWBMappingPanel extends HTMLElement {
     if (cardIndex < 0 || ruleIndex < 0) {
       return;
     }
+    this._openRelayPickerKey = this._relayPickerKey(
+      this._cards[cardIndex],
+      this._cards[cardIndex].rules[ruleIndex],
+    );
 
     const device = this._selectedDevice();
     const allOutputs = this._outputNumbers(device);
@@ -635,6 +657,47 @@ class OpenWBMappingPanel extends HTMLElement {
     return rule ? normalizeNumber(rule.dataset.ruleIndex) : -1;
   }
 
+  _relayPickerKey(card, rule) {
+    return `${card.inputNumber}:${rule.id}`;
+  }
+
+  _toggleRelayPicker(element) {
+    const key = element.dataset.relayKey || "";
+    if (!key) {
+      return;
+    }
+
+    if (element.open) {
+      this._openRelayPickerKey = "";
+      return;
+    }
+
+    this._closeRelayPicker();
+    this._openRelayPickerKey = key;
+  }
+
+  _closeRelayPicker() {
+    if (!this._openRelayPickerKey) {
+      return;
+    }
+
+    const key = this._openRelayPickerKey;
+    this._openRelayPickerKey = "";
+    const openPicker = this.shadowRoot.querySelector(
+      `.relay-picker[data-relay-key="${key}"]`,
+    );
+    if (openPicker) {
+      openPicker.open = false;
+    }
+  }
+
+  _closeRelayPickerFromEvent(event) {
+    if (event.composedPath().includes(this)) {
+      return;
+    }
+    this._closeRelayPicker();
+  }
+
   _errorMessage(error) {
     return error?.message || error?.error || String(error);
   }
@@ -846,13 +909,13 @@ class OpenWBMappingPanel extends HTMLElement {
         </label>
         <div class="control">
           <span>${escapeHtml(this._t("field.relay"))}</span>
-          ${this._renderRelayPicker(rule)}
+          ${this._renderRelayPicker(card, rule)}
         </div>
       </div>
     `;
   }
 
-  _renderRelayPicker(rule) {
+  _renderRelayPicker(card, rule) {
     const device = this._selectedDevice();
     const outputs = this._outputNumbers(device);
     const selected = new Set((rule.outputs || []).map(Number));
@@ -860,9 +923,10 @@ class OpenWBMappingPanel extends HTMLElement {
     const summary = allSelected
       ? this._t("relay.all")
       : outputs.filter((output) => selected.has(output)).map((output) => this._t("relay.item", { number: output })).join(", ") || this._t("relay.select");
+    const pickerKey = this._relayPickerKey(card, rule);
 
     return `
-      <details class="relay-picker">
+      <details class="relay-picker" data-relay-key="${escapeHtml(pickerKey)}" ${pickerKey === this._openRelayPickerKey ? "open" : ""}>
         <summary>${escapeHtml(summary)}</summary>
         <div class="relay-menu">
           <label class="check">
