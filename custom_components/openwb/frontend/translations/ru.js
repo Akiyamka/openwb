@@ -25,23 +25,23 @@ export default {
   "field.relay": "Реле",
   "inputMode.disableAllOutputs": "Отключение всех выходов",
   "inputMode.frequency": "Счетчик нажатий",
-  "inputMode.latching": "Фиксированный",
+  "inputMode.latching": "Переключатель",
   "inputMode.mappingMatrixButton": "Mapping matrix: нажатия",
   "inputMode.mappingMatrixEdge": "Mapping matrix: фронты",
-  "inputMode.momentary": "Кнопка без фиксации",
+  "inputMode.momentary": "Кнопка",
   "inputMode.unused": "Не используется",
   "inputModeHelp.disableAllOutputs":
     "При срабатывании вход отключает все выходы модуля.",
   "inputModeHelp.frequency":
     "Локальное управление отключено, вход используется как счетчик нажатий.",
   "inputModeHelp.latching":
-    "Выключатель с фиксацией управляет реле с тем же номером.",
+    "Имеет два устойчивых состояния: включено и выключено.",
   "inputModeHelp.mappingMatrixButton":
     "Действия входа задаются правилами mapping matrix для типов нажатий.",
   "inputModeHelp.mappingMatrixEdge":
     "Действия входа задаются правилами mapping matrix для фронтов сигнала.",
   "inputModeHelp.momentary":
-    "Кнопка без фиксации управляет реле с тем же номером.",
+    "Замыкает контакт только пока ты ее держишь, а потом сама возвращается назад.",
   "action.none": "Нет действия",
   "relay.all": "Все реле",
   "relay.item": "Реле {number}",

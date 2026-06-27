@@ -24,25 +24,24 @@ export default {
   "field.inputMode": "Mode",
   "field.pressType": "Press type",
   "field.relay": "Relay",
-  "inputMode.disableAllOutputs": "disable all outputs",
-  "inputMode.frequency": "frequency",
-  "inputMode.latching": "latching",
-  "inputMode.mappingMatrixButton": "mapping matrix: button presses",
-  "inputMode.mappingMatrixEdge": "mapping matrix: signal edges",
-  "inputMode.momentary": "momentary",
-  "inputMode.unused": "unused",
+  "inputMode.disableAllOutputs": "Disable all outputs",
+  "inputMode.frequency": "Press counter",
+  "inputMode.latching": "Switch",
+  "inputMode.mappingMatrixButton": "Mapping matrix: button presses",
+  "inputMode.mappingMatrixEdge": "Mapping matrix: signal edges",
+  "inputMode.momentary": "Button",
+  "inputMode.unused": "Unused",
   "inputModeHelp.disableAllOutputs":
     "When this input is triggered, the module turns all outputs off.",
   "inputModeHelp.frequency":
-    "Local control is disabled and the input is used for frequency measurement.",
-  "inputModeHelp.latching":
-    "A latching switch controls the relay with the same number.",
+    "Local control is disabled and the input is used as a press counter.",
+  "inputModeHelp.latching": "Has two stable states: on and off.",
   "inputModeHelp.mappingMatrixButton":
     "Input actions are configured by mapping matrix rules for press types.",
   "inputModeHelp.mappingMatrixEdge":
     "Input actions are configured by mapping matrix rules for signal edges.",
   "inputModeHelp.momentary":
-    "A momentary button controls the relay with the same number.",
+    "Closes the contact only while you hold it, then returns by itself.",
   "relay.all": "All relays",
   "relay.item": "Relay {number}",
   "relay.none": "None",
