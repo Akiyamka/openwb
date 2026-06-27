@@ -23,6 +23,7 @@ from .const import DOMAIN
 from .devices import device_model_display_name, device_name
 from .devices.base import OpenWBDeviceMetadata
 from .mapping_matrix import OpenWBMappingMatrixBackend
+from .settings import OpenWBSettingsBackend
 from .wb_mr6c_modbus import INPUTS, OUTPUTS, MappingAction, MappingEvent
 
 PANEL_URL_PATH = DOMAIN
@@ -71,6 +72,7 @@ class OpenWBFrontendRuntime(Protocol):
     """Runtime data surface used by the frontend websocket API."""
 
     mapping_matrix: OpenWBMappingMatrixBackend
+    settings: OpenWBSettingsBackend
     device_metadata: dict[int, OpenWBDeviceMetadata]
 
 
@@ -170,11 +172,13 @@ async def websocket_read_mapping_matrix(
         matrices[str(int(event))] = _serialize_matrix(
             matrix, input_numbers, output_numbers
         )
+    input_modes = await runtime.settings.read_input_modes(device_id)
 
     connection.send_result(
         msg_id,
         {
             "device": _serialize_device(entry_id, device_id, metadata),
+            "input_modes": _serialize_input_modes(input_modes, input_numbers),
             "matrices": matrices,
         },
     )
@@ -287,6 +291,17 @@ def _serialize_matrix(
         }
         for input_number in input_numbers
         for output in output_numbers
+    ]
+
+
+def _serialize_input_modes(
+    input_modes: dict[int, int],
+    input_numbers: tuple[int, ...],
+) -> list[dict[str, int]]:
+    return [
+        {"input_number": input_number, "mode": int(input_modes[input_number])}
+        for input_number in input_numbers
+        if input_number in input_modes
     ]
 
 

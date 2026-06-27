@@ -8,7 +8,7 @@ export default {
   "button.refresh": "Refresh",
   "button.save": "Save",
   "button.saving": "Saving...",
-  "card.inputTitle": "Input number {number}",
+  "card.inputTitle": "Input {number}",
   "confirm.discardChanges": "Discard unsaved changes?",
   "empty.noMappingDevices": "No devices with mapping matrix support.",
   "event.doublePress": "Double press",

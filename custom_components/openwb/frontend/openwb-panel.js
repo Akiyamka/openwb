@@ -4,6 +4,7 @@ import {
   DEFAULT_ACTION,
   DEFAULT_EVENT,
   EVENT_OPTIONS,
+  MAPPING_MATRIX_INPUT_MODES,
 } from "./constants.js";
 import {
   cloneCards,
@@ -120,7 +121,11 @@ class OpenWBMappingPanel extends HTMLElement {
         entry_id: device.entry_id,
         device_id: device.device_id,
       });
-      this._cards = this._cardsFromMatrices(result.matrices || {}, device);
+      this._cards = this._cardsFromMatrices(
+        result.matrices || {},
+        result.input_modes || [],
+        device,
+      );
       this._originalCards = cloneCards(this._cards);
       this._dirty = false;
     } catch (error) {
@@ -381,9 +386,14 @@ class OpenWBMappingPanel extends HTMLElement {
     this._render();
   }
 
-  _cardsFromMatrices(matrices, device) {
+  _cardsFromMatrices(matrices, inputModes, device) {
     const inputNumbers = this._inputNumbers(device);
     const outputNumbers = this._outputNumbers(device);
+    const mappingModeInputs = new Set(
+      (Array.isArray(inputModes) ? inputModes : [])
+        .filter((item) => MAPPING_MATRIX_INPUT_MODES.has(Number(item.mode)))
+        .map((item) => Number(item.input_number)),
+    );
     const cards = [];
 
     for (const inputNumber of inputNumbers) {
@@ -426,7 +436,7 @@ class OpenWBMappingPanel extends HTMLElement {
         }
       }
 
-      if (rules.length) {
+      if (rules.length || mappingModeInputs.has(inputNumber)) {
         cards.push({ inputNumber, rules });
       }
     }

@@ -8,7 +8,7 @@ export default {
   "button.refresh": "Обновить",
   "button.save": "Сохранить",
   "button.saving": "Сохранение...",
-  "card.inputTitle": "Инпут номер {number}",
+  "card.inputTitle": "Вход {number}",
   "confirm.discardChanges": "Отменить несохраненные изменения?",
   "empty.noMappingDevices": "Нет устройств с поддержкой матрицы связей.",
   "event.doublePress": "Двойное нажатие",
