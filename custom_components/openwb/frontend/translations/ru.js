@@ -23,17 +23,17 @@ export default {
   "field.inputMode": "Режим",
   "field.pressType": "Тип нажатия",
   "field.relay": "Реле",
-  "inputMode.disableAllOutputs": "отключение всех выходов",
-  "inputMode.frequency": "частота",
-  "inputMode.latching": "фиксация",
-  "inputMode.mappingMatrixButton": "mapping matrix: нажатия",
-  "inputMode.mappingMatrixEdge": "mapping matrix: фронты",
-  "inputMode.momentary": "кнопка без фиксации",
-  "inputMode.unused": "не используется",
+  "inputMode.disableAllOutputs": "Отключение всех выходов",
+  "inputMode.frequency": "Счетчик нажатий",
+  "inputMode.latching": "Фиксированный",
+  "inputMode.mappingMatrixButton": "Mapping matrix: нажатия",
+  "inputMode.mappingMatrixEdge": "Mapping matrix: фронты",
+  "inputMode.momentary": "Кнопка без фиксации",
+  "inputMode.unused": "Не используется",
   "inputModeHelp.disableAllOutputs":
     "При срабатывании вход отключает все выходы модуля.",
   "inputModeHelp.frequency":
-    "Локальное управление отключено, вход используется для измерения частоты.",
+    "Локальное управление отключено, вход используется как счетчик нажатий.",
   "inputModeHelp.latching":
     "Выключатель с фиксацией управляет реле с тем же номером.",
   "inputModeHelp.mappingMatrixButton":
