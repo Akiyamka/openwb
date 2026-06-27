@@ -325,6 +325,13 @@ These entities reflect live state, fire button-press events, and issue relay com
 
 Device **settings** and the **mapping matrix** are exposed by the device client as read/write operations (see [Settings Backend](#settings-backend) and [Mapping Matrix](#mapping-matrix)). How they are represented or edited in the UI — entities, options flow, a panel — is out of scope for this backend document.
 
+The UI-facing configuration endpoint is allowed to compose those two backend
+surfaces when one user action must update both. In particular, editing local
+input-to-relay behavior needs both input modes and mapping matrices: legacy
+input modes (`0`, `1`, `2`, `3`) define local behavior without matrix cells,
+while matrix behavior requires input mode `4` (signal edges) or `6` (button
+press types).
+
 ## Device Registry
 
 Each device subentry maps to one Home Assistant device; all of that module's entities share it. The device is registered against its subentry (`config_subentry_id`) so HA shows it under the right bus entry.
@@ -442,6 +449,21 @@ For WB-MR6C v.2:
 - matrix register rows are spaced by 8 because the generic Wiren Board matrix is 8 columns wide.
 
 The matrix is loaded on demand (never on the fast poll): it is large and changes only when the configuration is edited.
+
+The UI-facing write contract for matrix configuration must include the complete
+desired input-mode set for the device along with the desired matrix rules. The
+backend validates the two together before writing:
+
+- `input_modes` must cover every input exposed by the selected device;
+- `input 0` must not be written with modes `0` or `1`;
+- mode `5` is unused and must not be written;
+- rules for press events require input mode `6`;
+- rules for falling/rising edge events require input mode `4`;
+- legacy modes may be saved with no matrix rules for that input.
+
+After validation, write the mapping matrices and then write the requested input
+modes. This keeps the device's active input mode explicit instead of inferring
+it from the presence of non-empty matrix cells.
 
 ## Services
 

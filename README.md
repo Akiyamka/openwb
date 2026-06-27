@@ -61,4 +61,5 @@ Backend architecture:
 
 ## Screenshots
 
-![screenshot](screenshots/overview.png)
+![overview](screenshots/overview.png)
+![dashboard](screenshots/dashboard.png)
