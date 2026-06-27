@@ -11,7 +11,11 @@ from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.websocket_api import async_register_command
 from homeassistant.components.websocket_api.connection import ActiveConnection
-from homeassistant.components.websocket_api.const import ERR_NOT_FOUND, ERR_NOT_SUPPORTED
+from homeassistant.components.websocket_api.const import (
+    ERR_INVALID_FORMAT,
+    ERR_NOT_FOUND,
+    ERR_NOT_SUPPORTED,
+)
 from homeassistant.components.websocket_api.decorators import (
     async_response,
     require_admin,
@@ -24,7 +28,7 @@ from .devices import device_model_display_name, device_name
 from .devices.base import OpenWBDeviceMetadata
 from .mapping_matrix import OpenWBMappingMatrixBackend
 from .settings import OpenWBSettingsBackend
-from .wb_mr6c_modbus import INPUTS, OUTPUTS, MappingAction, MappingEvent
+from .wb_mr6c_modbus import INPUTS, OUTPUTS, InputMode, MappingAction, MappingEvent
 
 PANEL_URL_PATH = DOMAIN
 PANEL_WEB_COMPONENT = "openwb-mapping-panel"
@@ -57,6 +61,17 @@ _MAPPING_RULE_SCHEMA = {
     vol.Required("action"): _MAPPING_ACTION_SCHEMA,
     vol.Required("outputs"): vol.All([_OUTPUT_SCHEMA], vol.Length(min=1)),
 }
+_MAPPING_BUTTON_EVENTS = frozenset(
+    (
+        MappingEvent.SHORT_PRESS,
+        MappingEvent.LONG_PRESS,
+        MappingEvent.DOUBLE_PRESS,
+        MappingEvent.SHORT_THEN_LONG_PRESS,
+    )
+)
+_MAPPING_EDGE_EVENTS = frozenset(
+    (MappingEvent.FALLING_EDGE, MappingEvent.RISING_EDGE)
+)
 
 
 class MappingRule(TypedDict):
@@ -222,7 +237,17 @@ async def websocket_write_mapping_matrix(
         return
 
     matrices = _empty_matrices()
-    for mapping in _message_mapping_rules(msg):
+    mapping_rules = _message_mapping_rules(msg)
+    input_modes = _input_modes_for_mapping_rules(mapping_rules)
+    if input_modes is None:
+        connection.send_error(
+            msg_id,
+            ERR_INVALID_FORMAT,
+            "One openWB input cannot mix button and edge mapping events",
+        )
+        return
+
+    for mapping in mapping_rules:
         event = MappingEvent(mapping["event"])
         action = MappingAction(mapping["action"])
         input_number = mapping["input_number"]
@@ -231,6 +256,9 @@ async def websocket_write_mapping_matrix(
 
     for event, matrix in matrices.items():
         await runtime.mapping_matrix.write_mapping_matrix(device_id, event, matrix)
+
+    for input_number, mode in input_modes.items():
+        await runtime.settings.set_input_mode(device_id, input_number, mode)
 
     connection.send_result(msg_id)
 
@@ -303,6 +331,27 @@ def _serialize_input_modes(
         for input_number in input_numbers
         if input_number in input_modes
     ]
+
+
+def _input_modes_for_mapping_rules(
+    mapping_rules: list[MappingRule],
+) -> dict[int, InputMode] | None:
+    input_modes: dict[int, InputMode] = {}
+    for mapping in mapping_rules:
+        event = MappingEvent(mapping["event"])
+        input_number = mapping["input_number"]
+        if event in _MAPPING_BUTTON_EVENTS:
+            mode = InputMode.MAPPING_MATRIX_BUTTON
+        elif event in _MAPPING_EDGE_EVENTS:
+            mode = InputMode.MAPPING_MATRIX_EDGE
+        else:
+            return None
+
+        existing_mode = input_modes.get(input_number)
+        if existing_mode is not None and existing_mode is not mode:
+            return None
+        input_modes[input_number] = mode
+    return input_modes
 
 
 def _empty_matrices() -> dict[MappingEvent, dict[tuple[int, int], MappingAction]]:

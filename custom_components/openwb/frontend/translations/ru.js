@@ -21,6 +21,14 @@ export default {
   "field.device": "Устройство",
   "field.pressType": "Тип нажатия",
   "field.relay": "Реле",
+  "inputMode.current": "Текущий режим: {mode}",
+  "inputMode.disabled": "отключён",
+  "inputMode.disableAllOutputs": "отключение всех выходов",
+  "inputMode.frequency": "частота",
+  "inputMode.latching": "фиксация",
+  "inputMode.mappingMatrixButton": "mapping matrix: нажатия",
+  "inputMode.mappingMatrixEdge": "mapping matrix: фронты",
+  "inputMode.momentary": "кнопка без фиксации",
   "relay.all": "Все реле",
   "relay.item": "Реле {number}",
   "relay.select": "Выберите реле",
@@ -28,5 +36,7 @@ export default {
   "status.saved": "Сохранено",
   "validation.duplicateCell":
     "Для одного инпута, типа нажатия и реле указано несколько действий.",
+  "validation.mixedEventTypes":
+    "Для одного входа нельзя смешивать типы нажатий и фронты сигнала.",
   "validation.selectRelay": "Выберите хотя бы одно реле.",
 };

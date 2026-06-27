@@ -29,7 +29,21 @@ export const DEFAULT_ACTION = 3;
 
 export const INPUT_MODE_MAPPING_MATRIX_EDGE = 4;
 export const INPUT_MODE_MAPPING_MATRIX_BUTTON = 6;
+export const INPUT_MODE_DISABLED = 5;
 export const MAPPING_MATRIX_INPUT_MODES = new Set([
   INPUT_MODE_MAPPING_MATRIX_EDGE,
   INPUT_MODE_MAPPING_MATRIX_BUTTON,
 ]);
+export const ACTIVE_LEGACY_INPUT_MODES = new Set([0, 1, 2, 3]);
+export const BUTTON_EVENT_VALUES = new Set([544, 608, 672, 736]);
+export const EDGE_EVENT_VALUES = new Set([800, 864]);
+
+export const INPUT_MODE_LABEL_KEYS = {
+  0: "inputMode.momentary",
+  1: "inputMode.latching",
+  2: "inputMode.disableAllOutputs",
+  3: "inputMode.frequency",
+  4: "inputMode.mappingMatrixEdge",
+  5: "inputMode.disabled",
+  6: "inputMode.mappingMatrixButton",
+};

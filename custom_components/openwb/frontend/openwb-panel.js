@@ -1,9 +1,13 @@
 import {
   ACTION_NONE,
   ACTION_OPTIONS,
+  ACTIVE_LEGACY_INPUT_MODES,
+  BUTTON_EVENT_VALUES,
   DEFAULT_ACTION,
   DEFAULT_EVENT,
+  EDGE_EVENT_VALUES,
   EVENT_OPTIONS,
+  INPUT_MODE_LABEL_KEYS,
   MAPPING_MATRIX_INPUT_MODES,
 } from "./constants.js";
 import {
@@ -292,7 +296,7 @@ class OpenWBMappingPanel extends HTMLElement {
     }
     this._cards = this._cards.map((card, index) =>
       index === cardIndex
-        ? { ...card, rules: [...card.rules, this._newRule()] }
+        ? { ...card, rules: [...card.rules, this._newRule(card)] }
         : card,
     );
     this._markDirty();
@@ -389,6 +393,12 @@ class OpenWBMappingPanel extends HTMLElement {
   _cardsFromMatrices(matrices, inputModes, device) {
     const inputNumbers = this._inputNumbers(device);
     const outputNumbers = this._outputNumbers(device);
+    const inputModeByInput = new Map(
+      (Array.isArray(inputModes) ? inputModes : []).map((item) => [
+        Number(item.input_number),
+        Number(item.mode),
+      ]),
+    );
     const mappingModeInputs = new Set(
       (Array.isArray(inputModes) ? inputModes : [])
         .filter((item) => MAPPING_MATRIX_INPUT_MODES.has(Number(item.mode)))
@@ -398,6 +408,7 @@ class OpenWBMappingPanel extends HTMLElement {
 
     for (const inputNumber of inputNumbers) {
       const rules = [];
+      const inputMode = inputModeByInput.get(inputNumber);
       for (const eventOption of EVENT_OPTIONS) {
         const cells = Array.isArray(matrices[String(eventOption.value)])
           ? matrices[String(eventOption.value)]
@@ -436,8 +447,16 @@ class OpenWBMappingPanel extends HTMLElement {
         }
       }
 
-      if (rules.length || mappingModeInputs.has(inputNumber)) {
-        cards.push({ inputNumber, rules });
+      if (
+        rules.length ||
+        mappingModeInputs.has(inputNumber) ||
+        ACTIVE_LEGACY_INPUT_MODES.has(inputMode)
+      ) {
+        cards.push({
+          inputNumber,
+          inputMode: inputMode ?? null,
+          rules,
+        });
       }
     }
 
@@ -447,6 +466,7 @@ class OpenWBMappingPanel extends HTMLElement {
   _mappingsFromCards() {
     const mappings = [];
     const seenCells = new Set();
+    const eventTypeByInput = new Map();
 
     for (const card of this._cards) {
       for (const rule of card.rules) {
@@ -467,6 +487,13 @@ class OpenWBMappingPanel extends HTMLElement {
           seenCells.add(cellKey);
         }
 
+        const eventType = this._mappingEventType(rule.event);
+        const existingEventType = eventTypeByInput.get(card.inputNumber);
+        if (existingEventType && existingEventType !== eventType) {
+          throw new Error(this._t("validation.mixedEventTypes"));
+        }
+        eventTypeByInput.set(card.inputNumber, eventType);
+
         mappings.push({
           input_number: card.inputNumber,
           event: rule.event,
@@ -479,14 +506,33 @@ class OpenWBMappingPanel extends HTMLElement {
     return mappings;
   }
 
-  _newRule() {
+  _newRule(card = undefined) {
     const firstOutput = this._outputNumbers(this._selectedDevice())[0];
     return {
       id: this._nextRuleId(),
-      event: DEFAULT_EVENT,
+      event: this._defaultEventForCard(card),
       action: DEFAULT_ACTION,
       outputs: firstOutput === undefined ? [] : [firstOutput],
     };
+  }
+
+  _defaultEventForCard(card) {
+    if (card?.rules?.length) {
+      const firstEvent = card.rules[0].event;
+      return EDGE_EVENT_VALUES.has(Number(firstEvent)) ? 864 : DEFAULT_EVENT;
+    }
+    return DEFAULT_EVENT;
+  }
+
+  _mappingEventType(event) {
+    const eventNumber = Number(event);
+    if (BUTTON_EVENT_VALUES.has(eventNumber)) {
+      return "button";
+    }
+    if (EDGE_EVENT_VALUES.has(eventNumber)) {
+      return "edge";
+    }
+    return "unknown";
   }
 
   _nextRuleId() {
@@ -629,6 +675,7 @@ class OpenWBMappingPanel extends HTMLElement {
           </button>
         </header>
         <div class="rules">
+          ${this._renderInputModeNotice(card)}
           ${card.rules.map((rule, index) => this._renderRule(rule, index)).join("")}
           <button class="add-rule" data-action="add-rule">
             <ha-icon icon="mdi:plus"></ha-icon>
@@ -636,6 +683,23 @@ class OpenWBMappingPanel extends HTMLElement {
           </button>
         </div>
       </article>
+    `;
+  }
+
+  _renderInputModeNotice(card) {
+    if (MAPPING_MATRIX_INPUT_MODES.has(Number(card.inputMode))) {
+      return "";
+    }
+
+    const labelKey = INPUT_MODE_LABEL_KEYS[Number(card.inputMode)];
+    if (!labelKey) {
+      return "";
+    }
+
+    return `
+      <div class="mode-note">
+        ${escapeHtml(this._t("inputMode.current", { mode: this._t(labelKey) }))}
+      </div>
     `;
   }
 
@@ -835,6 +899,17 @@ class OpenWBMappingPanel extends HTMLElement {
         border: 1px solid var(--divider-color);
         border-radius: 8px;
         background: var(--secondary-background-color);
+      }
+
+      .mode-note {
+        min-height: 40px;
+        padding: 10px 12px;
+        border: 1px solid var(--divider-color);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--primary-color) 8%, transparent);
+        color: var(--secondary-text-color);
+        font-size: 13px;
+        line-height: 1.4;
       }
 
       .rule-delete {

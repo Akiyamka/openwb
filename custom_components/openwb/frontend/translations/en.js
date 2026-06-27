@@ -21,6 +21,14 @@ export default {
   "field.device": "Device",
   "field.pressType": "Press type",
   "field.relay": "Relay",
+  "inputMode.current": "Current mode: {mode}",
+  "inputMode.disabled": "disabled",
+  "inputMode.disableAllOutputs": "disable all outputs",
+  "inputMode.frequency": "frequency",
+  "inputMode.latching": "latching",
+  "inputMode.mappingMatrixButton": "mapping matrix: button presses",
+  "inputMode.mappingMatrixEdge": "mapping matrix: signal edges",
+  "inputMode.momentary": "momentary",
   "relay.all": "All relays",
   "relay.item": "Relay {number}",
   "relay.select": "Select relay",
@@ -28,5 +36,7 @@ export default {
   "status.saved": "Saved",
   "validation.duplicateCell":
     "Multiple actions are configured for the same input, press type, and relay.",
+  "validation.mixedEventTypes":
+    "One input cannot mix press events and signal edge events.",
   "validation.selectRelay": "Select at least one relay.",
 };
