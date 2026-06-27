@@ -1029,6 +1029,7 @@ class OpenWBMappingPanel extends HTMLElement {
         display: grid;
         gap: 10px;
         padding: 12px;
+        padding-top: 32px;
         border: 1px solid var(--divider-color);
         border-radius: 8px;
         background: var(--secondary-background-color);
@@ -1036,14 +1037,13 @@ class OpenWBMappingPanel extends HTMLElement {
 
       .rule-delete {
         position: absolute;
-        top: 8px;
-        right: 8px;
+        top: 0px;
+        right: 0px;
       }
 
       .control {
         display: grid;
         gap: 6px;
-        padding-right: 34px;
         color: var(--secondary-text-color);
         font-size: 12px;
       }
