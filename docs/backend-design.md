@@ -1,25 +1,20 @@
 # Backend Design
 
 This document describes the target backend implementation for the openWB Home Assistant integration.
-
-The first supported device is the Wiren Board WB-MR6C v.2 relay module.
-
-This integration targets a deployment the official Wiren Board integration does not cover: **no Wiren Board controller**, with the modules sitting directly on an RS-485 bus reached through a USB-RS485 dongle on the Home Assistant host. The official integration speaks MQTT to a Wiren Board controller; this one is the Modbus master itself.
+The official integration speaks MQTT to a Wiren Board controller; this one is the Modbus master itself.
 
 ## Goals
 
 - Keep the device-specific Modbus register logic separate from Home Assistant UI/entity code.
-- Own a direct serial (USB-RS485) Modbus connection inside the integration so it can act as the single bus master and later add Wiren Board fast Modbus (see [Modbus Ownership Model](#modbus-ownership-model)).
+- Own a direct serial Modbus connection inside the integration so it can act as the single bus master and later add Wiren Board fast Modbus (see [Modbus Ownership Model](#modbus-ownership-model)).
 - Support both control paths on a WB module: **local** button→relay switching (the on-device mapping matrix, instant) and **HA-mediated** automations bound to the same buttons and relays. HA's roles are: switch relays (immediate writes), observe button presses as automation triggers (fast polling), and read/write the mapping matrix configuration.
 - Expose relay state/control, button presses, input level, and device settings through native Home Assistant entities.
 - Make settings writes explicit, validated, and easy to test without real hardware.
-- Keep the backend extensible for other Wiren Board modules later.
+- Keep the backend extensible for other Wiren Board modules.
 
 ## Non-Goals
 
 - A Modbus TCP-to-RTU gateway topology is out of scope; the integration connects over a **direct serial (USB-RS485)** link only.
-- This integration should not duplicate Home Assistant's generic Modbus YAML entity model.
-- This integration should not depend on UI code for register reads/writes.
 - This integration should not share an RS-485 bus with Home Assistant's built-in `modbus` integration (two masters on one bus do not work — see [Modbus Ownership Model](#modbus-ownership-model)).
 
 ## Modbus Ownership Model
