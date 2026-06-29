@@ -6,7 +6,7 @@ The official integration speaks MQTT to a Wiren Board controller; this one is th
 ## Goals
 
 - Keep the device-specific Modbus register logic separate from Home Assistant UI/entity code.
-- Own a direct serial Modbus connection inside the integration so it can act as the single bus master and later add Wiren Board fast Modbus (see [Modbus Ownership Model](#modbus-ownership-model)).
+- Own a direct serial Modbus connection inside the integration so it can act as the single bus master and support Wiren Board Fast Modbus events (see [Modbus Ownership Model](#modbus-ownership-model)).
 - Support both control paths on a WB module: **local** button→relay switching (the on-device mapping matrix, instant) and **HA-mediated** automations bound to the same buttons and relays. HA's roles are: switch relays (immediate writes), observe button presses as automation triggers (fast polling), and read/write the mapping matrix configuration.
 - Expose relay state/control, button presses, input level, and device settings through native Home Assistant entities.
 - Make settings writes explicit, validated, and easy to test without real hardware.
@@ -27,16 +27,35 @@ A Modbus RTU (RS-485) bus allows exactly **one master**. The rule is therefore: 
 The hub object lives in-process in `hass.data` and already owns an open connection, so the config entry would not need its own serial settings. Rejected as the target model because:
 
 - the built-in `modbus` integration exposes **no read services** (only `modbus.write_coil` / `modbus.write_register`), so reads would require calling private `ModbusHub` internals that are not a stable API;
-- it cannot speak Wiren Board fast Modbus, which is an explicit future goal.
+- it cannot speak Wiren Board fast Modbus, which this integration implements in its own serial transport.
 
 **Model B — own the connection (target model).**
-The integration holds its own `pymodbus` client per bus and is the sole master on each bus. This is the chosen direction because it gives a supported read path, full control over polling, and a place to add fast Modbus later. The cost is that the serial parameters must live in the bus config entry (see [Configuration Model](#configuration-model)).
+The integration holds its own serial transport per bus and is the sole master on each bus. This is the chosen direction because it gives a supported read path, full control over polling, and a place for Fast Modbus event polling. The cost is that the serial parameters must live in the bus config entry (see [Configuration Model](#configuration-model)).
 
 **Hard constraint:** because Model B makes this integration the bus master, the built-in `modbus` integration must **not** be configured for the same RS-485 bus. If the bus is shared with other devices the user drives through built-in `modbus`, this integration cannot run on it. Mixed-bus support is out of scope.
 
 ### Fast Modbus
 
-Wiren Board controllers support a fast Modbus extension (event-driven scan instead of blind polling) that the built-in `modbus` integration does not implement. Owning the transport (Model B) is what makes adopting it possible later. The transport protocol below is intentionally narrow so a fast-Modbus transport can be added behind the same interface without touching the device client or entities.
+Wiren Board controllers support a fast Modbus extension (event-driven scan instead of blind polling) that the built-in `modbus` integration does not implement. Owning the transport (Model B) is what makes it possible. The integration uses a fast-capable serial transport for runtime serial buses; devices or firmware without event support continue through the same regular Modbus polling fallback.
+
+The fast path is intentionally kept behind the transport/coordinator boundary:
+
+- standard reads/writes still use the normal `ModbusTransport` operations;
+- supported devices are configured with Fast Modbus register-change events (`0x46/0x18`);
+- coordinator updates drain event packets (`0x46/0x10`, `0x11`, `0x12`) and merge them into cached device state;
+- if event configuration or event polling fails, the device falls back to regular sequential polling.
+
+Implemented scope is limited to event polling for already configured devices
+with unique Modbus slave IDs. The following Fast Modbus protocol features are
+not implemented yet:
+
+- fast bus scanning (`0x46/0x01`, `0x02`, `0x03`, `0x04`);
+- standard Modbus commands addressed by device serial number (`0x46/0x08`,
+  `0x09`);
+- automatic duplicate-slave-ID detection or reassignment through Fast Modbus;
+- optimized event-response timeout calculation from the protocol timing
+  formula; the current serial transport uses the configured serial timeout and
+  skips arbitration bytes (`0xFF`) while waiting for an event response.
 
 ## Runtime Constraints
 
@@ -184,8 +203,8 @@ class ModbusTransport(Protocol):
 
 Under [Model B](#modbus-ownership-model) the transport is owned by the integration:
 
-- A pymodbus **serial** transport (`AsyncModbusSerialClient` over the USB-RS485 dongle) is the runtime path. Its connection lifecycle is bound to the bus: connect on `async_setup_entry`, close on `async_unload_entry`.
-- A future fast-Modbus transport can implement the same protocol without changes above it.
+- A fast-capable **serial** transport over the USB-RS485 dongle is the runtime path. Its connection lifecycle is bound to the bus: connect on `async_setup_entry`, close on `async_unload_entry`.
+- The legacy pymodbus serial transport remains useful as a compatibility/test adapter, while the runtime transport adds raw RTU support for Fast Modbus event packets behind the same standard read/write methods.
 - `PymodbusTcpTransport` (already in the code) is **not** a supported deployment topology — TCP gateways are a non-goal. Keep it only as an optional development helper against a Modbus TCP simulator, or drop it.
 
 The transport must serialize requests (the existing `asyncio.Lock` does this) because one serial port carries a single transaction at a time across all devices on the bus. The lock is held **per transaction**, not across a batch: the coordinator acquires and releases it around each individual read, so a command write from an automation can interleave between two of the coordinator's per-device reads and wait at most one transaction — never a whole poll cycle. This keeps relay commands fast regardless of the poll interval (see [Writes and refresh](#writes-and-refresh)).
@@ -477,4 +496,3 @@ Transport errors should be converted to Home Assistant-friendly exceptions at th
 - write failure raises `HomeAssistantError` with a clear message;
 - invalid user input fails before writing to Modbus;
 - repeated connection failures should not spam logs — `DataUpdateCoordinator` already logs once and suppresses identical repeats, so no extra throttling is needed.
-

@@ -34,6 +34,7 @@ class OpenWBDeviceMetadata:
     input_numbers: tuple[int, ...]
     output_numbers: tuple[int, ...]
     press_counter_input_registers: bool
+    supports_fast_modbus_events: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +235,7 @@ class OpenWBDeviceDefinition:
     press_counter_firmware_gate: FirmwareGate | None = None
     relay_one_shot_firmware_gate: FirmwareGate | None = None
     relay_state_discrete_inputs_firmware_gate: FirmwareGate | None = None
+    fast_modbus_events_firmware_gate: FirmwareGate | None = None
 
     def matches_model(self, model: str | None) -> bool:
         """Return whether a raw or stored model value belongs to this definition."""

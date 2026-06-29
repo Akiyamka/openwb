@@ -108,6 +108,10 @@ def device_metadata_from_identification(
         input_numbers=input_numbers,
         output_numbers=output_numbers,
         press_counter_input_registers=definition.press_counter_input_registers,
+        supports_fast_modbus_events=_gate_supports(
+            definition.fast_modbus_events_firmware_gate,
+            firmware_version,
+        ),
     )
 
 
@@ -124,6 +128,7 @@ def unknown_device_metadata() -> OpenWBDeviceMetadata:
         input_numbers=INPUTS,
         output_numbers=OUTPUTS,
         press_counter_input_registers=False,
+        supports_fast_modbus_events=False,
     )
 
 

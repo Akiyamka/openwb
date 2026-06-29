@@ -1562,6 +1562,139 @@ class SetupUnloadTest(unittest.IsolatedAsyncioTestCase):
             transport.calls,
         )
 
+    async def test_coordinator_applies_fast_modbus_events_without_standard_poll(
+        self,
+    ) -> None:
+        transport = modbus.FakeModbusTransport()
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            1,
+            device_id=32,
+        )
+        client = modbus.WBMR6CModbus(transport, device_id=32)
+        metadata = _metadata(
+            firmware_version="1.24.0",
+            supports_press_counters=True,
+            supports_relay_state_discrete_inputs=True,
+            supports_fast_modbus_events=True,
+        )
+        coordinator = integration.WBMR6CBusCoordinator(
+            _hass(),
+            _bus_entry(),
+            {32: client},
+            {32: metadata},
+        )
+
+        await coordinator.async_request_refresh()
+
+        self.assertIn(
+            ("configure_fast_modbus_events", 32),
+            transport.fast_event_calls,
+        )
+        self.assertEqual(coordinator.data[32].press_counts[(1, "short")], 1)
+        transport.calls.clear()
+        transport.fast_event_calls.clear()
+        transport.queue_fast_modbus_event(
+            modbus.FastModbusRegisterEvent(
+                device_id=32,
+                flag=1,
+                remaining=0,
+                register_type=int(modbus.FastModbusRegisterType.HOLDING_REGISTER),
+                address=modbus.REG_PRESS_COUNTER_SHORT_BASE,
+                value=2,
+                payload=(2).to_bytes(2, "little"),
+            )
+        )
+        transport.queue_fast_modbus_event(
+            modbus.FastModbusRegisterEvent(
+                device_id=32,
+                flag=1,
+                remaining=0,
+                register_type=int(modbus.FastModbusRegisterType.DISCRETE_INPUT),
+                address=modbus.DISCRETE_INPUT_STATE_BASE,
+                value=True,
+                payload=b"\x01",
+            )
+        )
+
+        await coordinator.async_request_refresh()
+
+        self.assertEqual(transport.calls, [])
+        self.assertIn(("read_fast_modbus_events", 0), transport.fast_event_calls)
+        self.assertEqual(coordinator.data[32].press_counts[(1, "short")], 2)
+        self.assertTrue(coordinator.data[32].input_states[1])
+        event = coordinator.press_events[(32, 1, "short")]
+        self.assertEqual(event.counter, 2)
+        self.assertEqual(event.delta, 1)
+
+    async def test_incomplete_fast_modbus_configuration_falls_back_to_polling(
+        self,
+    ) -> None:
+        class PartialFastConfigTransport(modbus.FakeModbusTransport):
+            async def configure_fast_modbus_events(
+                self,
+                device_id: int,
+                ranges: Sequence[modbus.FastModbusEventRange],
+            ) -> modbus.FastModbusEventConfiguration:
+                self.fast_event_calls.append(
+                    ("configure_fast_modbus_events", device_id)
+                )
+                return modbus.FastModbusEventConfiguration(device_id, frozenset())
+
+        transport = PartialFastConfigTransport()
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            3,
+            device_id=32,
+        )
+        client = modbus.WBMR6CModbus(transport, device_id=32)
+        metadata = _metadata(
+            firmware_version="1.24.0",
+            supports_press_counters=True,
+            supports_relay_state_discrete_inputs=True,
+            supports_fast_modbus_events=True,
+        )
+        coordinator = integration.WBMR6CBusCoordinator(
+            _hass(),
+            _bus_entry(),
+            {32: client},
+            {32: metadata},
+        )
+
+        await coordinator.async_request_refresh()
+
+        self.assertIn(
+            ("configure_fast_modbus_events", 32),
+            transport.fast_event_calls,
+        )
+        self.assertNotIn(("read_fast_modbus_events", 0), transport.fast_event_calls)
+        self.assertIn(
+            ("read_holding_registers", modbus.REG_PRESS_COUNTER_SHORT_BASE, 8, 32),
+            transport.calls,
+        )
+        self.assertEqual(coordinator.data[32].press_counts[(1, "short")], 3)
+
+        transport.calls.clear()
+        transport.fast_event_calls.clear()
+        transport.set_holding_register(
+            modbus.REG_PRESS_COUNTER_SHORT_BASE,
+            4,
+            device_id=32,
+        )
+
+        await coordinator.async_request_refresh()
+
+        self.assertNotIn(
+            ("configure_fast_modbus_events", 32),
+            transport.fast_event_calls,
+        )
+        self.assertNotIn(("read_fast_modbus_events", 0), transport.fast_event_calls)
+        self.assertIn(
+            ("read_holding_registers", modbus.REG_PRESS_COUNTER_SHORT_BASE, 8, 32),
+            transport.calls,
+        )
+        self.assertEqual(coordinator.data[32].press_counts[(1, "short")], 4)
+
     async def test_press_counter_increment_updates_coordinator_press_event(self) -> None:
         entry = StubConfigEntry(
             {
@@ -2221,6 +2354,7 @@ def _metadata(
     supports_mapping_matrix: bool = True,
     supports_relay_one_shot_commands: bool = False,
     supports_relay_state_discrete_inputs: bool = True,
+    supports_fast_modbus_events: bool = False,
     input_numbers: tuple[int, ...] | None = None,
     output_numbers: tuple[int, ...] | None = None,
     press_counter_input_registers: bool = False,
@@ -2249,6 +2383,7 @@ def _metadata(
         input_numbers=input_numbers,
         output_numbers=output_numbers,
         press_counter_input_registers=press_counter_input_registers,
+        supports_fast_modbus_events=supports_fast_modbus_events,
     )
 
 

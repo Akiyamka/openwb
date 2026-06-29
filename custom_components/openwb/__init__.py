@@ -39,12 +39,22 @@ from .devices.base import OpenWBDeviceClient, OpenWBDeviceMetadata, OpenWBDevice
 from .mapping_matrix import OpenWBMappingMatrixBackend
 from .settings import OpenWBSettingsBackend
 from .transport import (
+    FastModbusSerialTransport as PymodbusSerialTransport,
     ManagedModbusTransport,
     ModbusTransport,
-    PymodbusSerialTransport,
 )
 from .wb_mr6c_modbus import (
+    COIL_RELAY_COMMAND_BASE,
+    DISCRETE_INPUT_STATE_BASE,
+    DISCRETE_RELAY_STATE_BASE,
+    FastModbusEventPriority,
+    FastModbusEventRange,
+    FastModbusEventTransport,
+    FastModbusRegisterEvent,
+    FastModbusRegisterType,
     PressCounterEvent,
+    input_level_discrete_input_address,
+    is_fast_modbus_event_transport,
     WBMR6CModbusConnectionError,
     WBMR6CModbusError,
     press_counter_delta,
@@ -61,6 +71,7 @@ _PRESS_COUNTER_EVENTS = (
 )
 PRESS_EVENT_TYPES = ("short", "long", "double", "short-then-long")
 _PRESS_COUNTER_EVENT_TYPES = dict(zip(_PRESS_COUNTER_EVENTS, PRESS_EVENT_TYPES))
+_FAST_MODBUS_EVENT_DRAIN_LIMIT = 16
 
 WBMR6CDeviceMetadata = OpenWBDeviceMetadata
 WBMR6CDeviceState = OpenWBDeviceState
@@ -102,7 +113,7 @@ class WBMR6CPressEvent:
 
 
 class WBMR6CBusCoordinator(DataUpdateCoordinator[dict[int, WBMR6CDeviceState]]):
-    """Poll all WB-MR6C devices on one serial bus sequentially."""
+    """Maintain live state for all openWB devices on one serial bus."""
 
     def __init__(
         self,
@@ -124,13 +135,28 @@ class WBMR6CBusCoordinator(DataUpdateCoordinator[dict[int, WBMR6CDeviceState]]):
         self.press_events: dict[tuple[int, int, str], WBMR6CPressEvent] = {}
         self._previous_press_counts: dict[tuple[int, int, str], int] = {}
         self._press_event_sequences: dict[tuple[int, int, str], int] = {}
+        self._fast_modbus_configured_devices: set[int] = set()
+        self._fast_modbus_disabled_devices: set[int] = set()
 
     @override
     async def _async_update_data(self) -> dict[int, WBMR6CDeviceState]:
         """Fetch one live-state snapshot for all currently configured devices."""
         data: dict[int, WBMR6CDeviceState] = {}
         connection_errors: dict[int, WBMR6CModbusConnectionError] = {}
+        fast_data: dict[int, WBMR6CDeviceState] = {}
+        _fast_failed_devices: set[int] = set()
+
+        fast_transport = _fast_modbus_transport_from_clients(self.clients)
+        if fast_transport is not None:
+            fast_data, _fast_failed_devices = await self._async_fast_modbus_data(
+                fast_transport
+            )
+
         for device_id in self.clients:
+            if device_id in fast_data:
+                data[device_id] = fast_data[device_id]
+                continue
+
             client = self.clients[device_id]
             metadata = self.device_metadata.get(device_id, _UNKNOWN_DEVICE_METADATA)
             try:
@@ -158,6 +184,92 @@ class WBMR6CBusCoordinator(DataUpdateCoordinator[dict[int, WBMR6CDeviceState]]):
             ) from first_error
 
         return data
+
+    async def _async_fast_modbus_data(
+        self,
+        transport: FastModbusEventTransport,
+    ) -> tuple[dict[int, WBMR6CDeviceState], set[int]]:
+        """Return Fast Modbus state updates and devices that need polling fallback."""
+        fast_device_ids = [
+            device_id
+            for device_id, metadata in self.device_metadata.items()
+            if metadata.supports_fast_modbus_events
+            and device_id not in self._fast_modbus_disabled_devices
+            and _fast_modbus_event_ranges(metadata)
+        ]
+        if not fast_device_ids:
+            return {}, set()
+
+        data: dict[int, WBMR6CDeviceState] = {}
+        failed_devices: set[int] = set()
+        previous_data = self.data or {}
+        for device_id in fast_device_ids:
+            client = self.clients.get(device_id)
+            metadata = self.device_metadata.get(device_id, _UNKNOWN_DEVICE_METADATA)
+            if client is None:
+                continue
+
+            if device_id not in self._fast_modbus_configured_devices:
+                try:
+                    ranges = _fast_modbus_event_ranges(metadata)
+                    configuration = await transport.configure_fast_modbus_events(
+                        device_id,
+                        ranges,
+                    )
+                    if not _fast_modbus_event_ranges_enabled(
+                        ranges,
+                        configuration.enabled,
+                    ):
+                        raise WBMR6CModbusError(
+                            "Fast Modbus did not enable all requested events"
+                        )
+                    self._fast_modbus_configured_devices.add(device_id)
+                except WBMR6CModbusError as err:
+                    failed_devices.add(device_id)
+                    self._fast_modbus_disabled_devices.add(device_id)
+                    _LOGGER.debug(
+                        "Disabling Fast Modbus events for openWB device %s: %s",
+                        device_id,
+                        err,
+                    )
+                    continue
+
+            try:
+                previous_state = previous_data.get(device_id)
+                if previous_state is None:
+                    previous_state = await _async_read_device_state(client, metadata)
+                data[device_id] = previous_state
+            except WBMR6CModbusError as err:
+                failed_devices.add(device_id)
+                _LOGGER.debug(
+                    "Could not seed Fast Modbus state for openWB device %s: %s",
+                    device_id,
+                    err,
+                )
+
+        if not data:
+            return {}, failed_devices
+
+        try:
+            events = await _async_drain_fast_modbus_events(transport)
+        except WBMR6CModbusError as err:
+            _LOGGER.debug(
+                "Fast Modbus event poll failed, falling back to standard polling: %s",
+                err,
+            )
+            return {}, set(data) | failed_devices
+
+        for event in events:
+            metadata = self.device_metadata.get(event.device_id)
+            state = data.get(event.device_id)
+            if metadata is None or state is None:
+                continue
+            if _is_fast_modbus_reset_event(event):
+                self._fast_modbus_configured_devices.discard(event.device_id)
+                continue
+            data[event.device_id] = _apply_fast_modbus_event(state, event, metadata)
+
+        return data, failed_devices
 
     def _update_press_events(self, data: dict[int, WBMR6CDeviceState]) -> None:
         """Update counter baselines and expose newly detected press events."""
@@ -455,6 +567,238 @@ async def _async_read_device_state(
         relay_states=relay_states,
         relay_commands=relay_commands,
     )
+
+
+def _fast_modbus_transport_from_clients(
+    clients: Mapping[int, OpenWBDeviceClient],
+) -> FastModbusEventTransport | None:
+    """Return the shared transport if it supports Fast Modbus events."""
+    for client in clients.values():
+        transport = getattr(client, "transport", None)
+        if is_fast_modbus_event_transport(transport):
+            return transport
+    return None
+
+
+def _fast_modbus_event_ranges(
+    metadata: WBMR6CDeviceMetadata,
+) -> tuple[FastModbusEventRange, ...]:
+    """Build Fast Modbus register-change ranges for live-state data."""
+    ranges: list[FastModbusEventRange] = []
+
+    if metadata.supports_inputs and metadata.input_numbers:
+        input_count = max(
+            input_level_discrete_input_address(input_number)
+            for input_number in metadata.input_numbers
+        ) + 1
+        ranges.append(
+            FastModbusEventRange(
+                FastModbusRegisterType.DISCRETE_INPUT,
+                DISCRETE_INPUT_STATE_BASE,
+                (FastModbusEventPriority.LOW,) * input_count,
+            )
+        )
+
+    if metadata.output_numbers:
+        ranges.append(
+            FastModbusEventRange(
+                FastModbusRegisterType.COIL,
+                COIL_RELAY_COMMAND_BASE,
+                (FastModbusEventPriority.LOW,) * len(metadata.output_numbers),
+            )
+        )
+        if metadata.supports_relay_state_discrete_inputs:
+            ranges.append(
+                FastModbusEventRange(
+                    FastModbusRegisterType.DISCRETE_INPUT,
+                    DISCRETE_RELAY_STATE_BASE,
+                    (FastModbusEventPriority.LOW,) * len(metadata.output_numbers),
+                )
+            )
+
+    if metadata.supports_press_counters and metadata.input_numbers:
+        register_type = (
+            FastModbusRegisterType.INPUT_REGISTER
+            if metadata.press_counter_input_registers
+            else FastModbusRegisterType.HOLDING_REGISTER
+        )
+        input_count = _press_counter_event_range_count(metadata.input_numbers)
+        for event in _PRESS_COUNTER_EVENTS:
+            ranges.append(
+                FastModbusEventRange(
+                    register_type,
+                    int(event),
+                    (FastModbusEventPriority.HIGH,) * input_count,
+                )
+            )
+
+    return tuple(ranges)
+
+
+def _fast_modbus_event_ranges_enabled(
+    ranges: tuple[FastModbusEventRange, ...],
+    enabled: frozenset[tuple[int, int]],
+) -> bool:
+    """Return whether the device enabled every requested fast-event register."""
+    expected = {
+        (int(range_item.register_type), address)
+        for range_item in ranges
+        for address in range(
+            range_item.address,
+            range_item.address + len(tuple(range_item.priorities)),
+        )
+    }
+    return expected <= enabled
+
+
+def _press_counter_event_range_count(input_numbers: tuple[int, ...]) -> int:
+    indexes = [
+        _input_register_event_index(input_number, input_numbers)
+        for input_number in input_numbers
+    ]
+    return max(indexes) + 1
+
+
+async def _async_drain_fast_modbus_events(
+    transport: FastModbusEventTransport,
+) -> tuple[FastModbusRegisterEvent, ...]:
+    """Read pending Fast Modbus events until the bus reports none."""
+    events: list[FastModbusRegisterEvent] = []
+    for _attempt in range(_FAST_MODBUS_EVENT_DRAIN_LIMIT):
+        packet_events = await transport.read_fast_modbus_events()
+        if not packet_events:
+            break
+        events.extend(packet_events)
+    return tuple(events)
+
+
+def _apply_fast_modbus_event(
+    state: WBMR6CDeviceState,
+    event: FastModbusRegisterEvent,
+    metadata: WBMR6CDeviceMetadata,
+) -> WBMR6CDeviceState:
+    """Merge one Fast Modbus register-change event into a cached state."""
+    input_states = dict(state.input_states)
+    press_counts = dict(state.press_counts)
+    relay_states = dict(state.relay_states)
+    relay_commands = dict(state.relay_commands)
+
+    if event.value is None:
+        return state
+
+    if event.register_type == int(FastModbusRegisterType.DISCRETE_INPUT):
+        input_number = _input_number_for_discrete_event(event.address, metadata)
+        if input_number is not None:
+            input_states[input_number] = bool(event.value)
+        output = _output_for_relay_state_event(event.address, metadata)
+        if output is not None:
+            relay_states[output] = bool(event.value)
+
+    if event.register_type == int(FastModbusRegisterType.COIL):
+        output = _output_for_relay_command_event(event.address, metadata)
+        if output is not None:
+            relay_commands[output] = bool(event.value)
+            if not metadata.supports_relay_state_discrete_inputs:
+                relay_states[output] = bool(event.value)
+
+    if event.register_type in {
+        int(FastModbusRegisterType.HOLDING_REGISTER),
+        int(FastModbusRegisterType.INPUT_REGISTER),
+    }:
+        press_key = _press_counter_key_for_register_event(event, metadata)
+        if press_key is not None:
+            press_counts[press_key] = int(event.value)
+
+    return WBMR6CDeviceState(
+        input_states=input_states,
+        press_counts=press_counts,
+        relay_states=relay_states,
+        relay_commands=relay_commands,
+    )
+
+
+def _is_fast_modbus_reset_event(event: FastModbusRegisterEvent) -> bool:
+    return event.register_type == 0x0F and event.address == 0
+
+
+def _input_number_for_discrete_event(
+    address: int,
+    metadata: WBMR6CDeviceMetadata,
+) -> int | None:
+    if not metadata.supports_inputs:
+        return None
+    for input_number in metadata.input_numbers:
+        if address == input_level_discrete_input_address(input_number):
+            return input_number
+    return None
+
+
+def _output_for_relay_state_event(
+    address: int,
+    metadata: WBMR6CDeviceMetadata,
+) -> int | None:
+    output = address - DISCRETE_RELAY_STATE_BASE + 1
+    if output in metadata.output_numbers:
+        return output
+    return None
+
+
+def _output_for_relay_command_event(
+    address: int,
+    metadata: WBMR6CDeviceMetadata,
+) -> int | None:
+    output = address - COIL_RELAY_COMMAND_BASE + 1
+    if output in metadata.output_numbers:
+        return output
+    return None
+
+
+def _press_counter_key_for_register_event(
+    event: FastModbusRegisterEvent,
+    metadata: WBMR6CDeviceMetadata,
+) -> tuple[int, str] | None:
+    if not metadata.supports_press_counters:
+        return None
+    expected_register_type = (
+        int(FastModbusRegisterType.INPUT_REGISTER)
+        if metadata.press_counter_input_registers
+        else int(FastModbusRegisterType.HOLDING_REGISTER)
+    )
+    if event.register_type != expected_register_type:
+        return None
+
+    for counter_event in _PRESS_COUNTER_EVENTS:
+        index = event.address - int(counter_event)
+        if index < 0:
+            continue
+        input_number = _input_number_for_register_event_index(
+            index,
+            metadata.input_numbers,
+        )
+        if input_number is not None:
+            return input_number, _PRESS_COUNTER_EVENT_TYPES[counter_event]
+    return None
+
+
+def _input_number_for_register_event_index(
+    index: int,
+    input_numbers: tuple[int, ...],
+) -> int | None:
+    for input_number in input_numbers:
+        if _input_register_event_index(input_number, input_numbers) == index:
+            return input_number
+    return None
+
+
+def _input_register_event_index(
+    input_number: int,
+    input_numbers: tuple[int, ...],
+) -> int:
+    if input_number == 0:
+        return 7
+    if 8 in input_numbers and input_number == 8:
+        return 7
+    return input_number - 1
 
 
 def _non_empty_string(value: object) -> str | None:

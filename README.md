@@ -13,7 +13,9 @@ However, if you already have a device capable of running Linux (for example Rasp
 
 ## Status
 
-Not support fast modbus yet
+Fast Modbus event polling is supported for firmware that exposes Wiren Board
+register-change events. Devices or firmware without event support continue to
+use regular Modbus polling.
 
 Supported modules:
 
@@ -28,6 +30,7 @@ Supported modules:
 - [WB-MCM8 registers](https://wiki.wirenboard.com/wiki/MCM8_Registers)
 - [Relay Module Modbus Management](https://wiki.wirenboard.com/wiki/Relay_Module_Modbus_Management)
 - [I/O Mapping Matrix](https://wiki.wirenboard.com/wiki/I/O_Mapping_Matrix)
+- [Fast Modbus](https://wiki.wirenboard.com/wiki/Fast_Modbus/en)
 
 ## Installation with HACS
 

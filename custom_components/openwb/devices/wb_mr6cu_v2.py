@@ -8,6 +8,7 @@ from ..wb_mr6c_modbus import (
     OUTPUTS,
     WBMR6CModbus,
     WBMR6CU_MODEL,
+    firmware_supports_fast_modbus_events,
     firmware_supports_relay_one_shot_commands,
     firmware_supports_relay_state_discrete_inputs,
 )
@@ -29,4 +30,5 @@ DEFINITION = OpenWBDeviceDefinition(
     relay_state_discrete_inputs_firmware_gate=(
         firmware_supports_relay_state_discrete_inputs
     ),
+    fast_modbus_events_firmware_gate=firmware_supports_fast_modbus_events,
 )

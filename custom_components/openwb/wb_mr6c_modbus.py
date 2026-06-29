@@ -9,6 +9,7 @@ from enum import IntEnum
 from typing import Protocol, TypeGuard, TypeVar, cast
 
 _ModbusValue = TypeVar("_ModbusValue", bool, int)
+_SyncResult = TypeVar("_SyncResult")
 
 DEFAULT_DEVICE_ID = 1
 DEFAULT_MODBUS_TCP_PORT = 502
@@ -16,6 +17,13 @@ DEFAULT_SERIAL_BAUDRATE = 9600
 DEFAULT_SERIAL_BYTESIZE = 8
 DEFAULT_SERIAL_PARITY = "N"
 DEFAULT_SERIAL_STOPBITS = 2
+FAST_MODBUS_ADDRESS = 0xFD
+FAST_MODBUS_FUNCTION = 0x46
+FAST_MODBUS_SUBCOMMAND_EVENT_REQUEST = 0x10
+FAST_MODBUS_SUBCOMMAND_EVENT_TRANSFER = 0x11
+FAST_MODBUS_SUBCOMMAND_NO_EVENTS = 0x12
+FAST_MODBUS_SUBCOMMAND_EVENT_CONFIGURATION = 0x18
+FAST_MODBUS_DEFAULT_EVENT_PAYLOAD_LENGTH = 100
 
 CHANNEL_COUNT = 6
 RELAY_COUNT = CHANNEL_COUNT
@@ -87,6 +95,8 @@ MIN_FIRMWARE_PRESS_COUNTERS = (1, 17, 0)
 MIN_FIRMWARE_MCM8_PRESS_COUNTERS = (1, 3, 2)
 MIN_FIRMWARE_RELAY_STATE_DISCRETE_INPUTS = (1, 24, 0)
 MIN_FIRMWARE_RELAY_ONE_SHOT_COMMANDS = (1, 26, 0)
+MIN_FIRMWARE_FAST_MODBUS_EVENTS = (1, 20, 0)
+MIN_FIRMWARE_MCM8_FAST_MODBUS_EVENTS = (1, 6, 0)
 
 
 class WBMR6CModbusError(Exception):
@@ -167,6 +177,23 @@ class MappingEvent(IntEnum):
     RISING_EDGE = REG_MAPPING_RISING_EDGE_BASE
 
 
+class FastModbusRegisterType(IntEnum):
+    """Fast Modbus register-change event source types."""
+
+    COIL = 1
+    DISCRETE_INPUT = 2
+    HOLDING_REGISTER = 3
+    INPUT_REGISTER = 4
+
+
+class FastModbusEventPriority(IntEnum):
+    """Fast Modbus register-change event sending priority."""
+
+    DISABLED = 0
+    LOW = 1
+    HIGH = 2
+
+
 class SafeState(IntEnum):
     """Safe-state relay value."""
 
@@ -235,6 +262,75 @@ class ManagedModbusTransport(ModbusTransport, Protocol):
     async def close(self) -> None:
         """Close the Modbus connection."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class FastModbusEventRange:
+    """Event-sending settings for one contiguous register range."""
+
+    register_type: FastModbusRegisterType | int
+    address: int
+    priorities: Sequence[FastModbusEventPriority | int]
+
+
+@dataclass(frozen=True, slots=True)
+class FastModbusEventConfiguration:
+    """Result of enabling Fast Modbus events for one device."""
+
+    device_id: int
+    enabled: frozenset[tuple[int, int]]
+
+
+@dataclass(frozen=True, slots=True)
+class FastModbusRegisterEvent:
+    """One register-change event received through Fast Modbus."""
+
+    device_id: int
+    flag: int
+    remaining: int
+    register_type: int
+    address: int
+    value: int | bool | None
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _FastModbusEventPacket:
+    """One Fast Modbus event-transfer packet, possibly without event payload."""
+
+    device_id: int
+    flag: int
+    events: tuple[FastModbusRegisterEvent, ...]
+
+
+class FastModbusEventTransport(ManagedModbusTransport, Protocol):
+    """Managed transport with Wiren Board Fast Modbus event support."""
+
+    async def configure_fast_modbus_events(
+        self,
+        device_id: int,
+        ranges: Sequence[FastModbusEventRange],
+    ) -> FastModbusEventConfiguration:
+        """Enable register-change events for one device."""
+        ...
+
+    async def read_fast_modbus_events(
+        self,
+        *,
+        min_device_id: int = 0,
+        max_payload_length: int = FAST_MODBUS_DEFAULT_EVENT_PAYLOAD_LENGTH,
+    ) -> Sequence[FastModbusRegisterEvent]:
+        """Read one Fast Modbus event packet from the bus."""
+        ...
+
+
+def is_fast_modbus_event_transport(
+    transport: object,
+) -> TypeGuard[FastModbusEventTransport]:
+    """Return whether a transport implements Fast Modbus event operations."""
+    return callable(getattr(transport, "configure_fast_modbus_events", None)) and (
+        callable(getattr(transport, "read_fast_modbus_events", None))
+    )
 
 
 class _ModbusResponse(Protocol):
@@ -310,6 +406,32 @@ class _PymodbusClient(Protocol):
         self, address: int, value: int, *, device_id: int
     ) -> Awaitable[_ModbusResponse]:
         """Write a single holding register."""
+        ...
+
+
+class _SerialPort(Protocol):
+    """Minimal pyserial-compatible surface used by the raw RTU transport."""
+
+    is_open: bool
+
+    def write(self, data: bytes) -> int | None:
+        """Write bytes to the serial port."""
+        ...
+
+    def read(self, size: int = 1) -> bytes:
+        """Read bytes from the serial port."""
+        ...
+
+    def flush(self) -> None:
+        """Flush pending serial writes."""
+        ...
+
+    def reset_input_buffer(self) -> None:
+        """Discard unread bytes from the serial input buffer."""
+        ...
+
+    def close(self) -> None:
+        """Close the serial port."""
         ...
 
 
@@ -512,6 +634,451 @@ class PymodbusTcpTransport(_PymodbusTransportAdapter):
         super().__init__(client, f"TCP {host}:{port}")
 
 
+class FastModbusSerialTransport:
+    """Async serial RTU transport with Wiren Board Fast Modbus events."""
+
+    def __init__(
+        self,
+        port: str,
+        *,
+        baudrate: int = DEFAULT_SERIAL_BAUDRATE,
+        bytesize: int = DEFAULT_SERIAL_BYTESIZE,
+        parity: str = DEFAULT_SERIAL_PARITY,
+        stopbits: int = DEFAULT_SERIAL_STOPBITS,
+        timeout: float = 0.25,
+        retries: int = 1,
+        serial_factory: Callable[..., object] | None = None,
+    ) -> None:
+        """Initialize the raw serial RTU transport."""
+        self._port: str = port
+        self._baudrate: int = baudrate
+        self._bytesize: int = bytesize
+        self._parity: str = parity
+        self._stopbits: int = stopbits
+        self._timeout: float = timeout
+        self._retries: int = max(0, retries)
+        self._serial_factory: Callable[..., object] | None = serial_factory
+        self._serial: _SerialPort | None = None
+        self._lock: asyncio.Lock = asyncio.Lock()
+        self._event_confirmation: tuple[int, int] | None = None
+
+    async def connect(self) -> None:
+        """Open the serial port if needed."""
+        try:
+            await asyncio.to_thread(self._connect_sync)
+        except WBMR6CModbusConnectionError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            raise WBMR6CModbusConnectionError(
+                f"Unable to connect to Modbus serial port {self._port}"
+            ) from err
+
+    async def close(self) -> None:
+        """Close the serial port."""
+        try:
+            await asyncio.to_thread(self._close_sync)
+        except WBMR6CModbusConnectionError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            raise WBMR6CModbusConnectionError(
+                f"Unable to close Modbus serial port {self._port}"
+            ) from err
+
+    async def read_coils(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[bool]:
+        """Read coil values."""
+        payload = await self._read_bits(device_id, 0x01, address, count)
+        return _bits_from_bytes(payload, count)
+
+    async def write_coil(self, address: int, value: bool, device_id: int) -> None:
+        """Write a single coil value."""
+        raw_value = 0xFF00 if value else 0x0000
+        await self._write_single_value(device_id, 0x05, address, raw_value)
+
+    async def read_discrete_inputs(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[bool]:
+        """Read discrete input values."""
+        payload = await self._read_bits(device_id, 0x02, address, count)
+        return _bits_from_bytes(payload, count)
+
+    async def read_holding_registers(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[int]:
+        """Read holding register values."""
+        payload = await self._read_register_bytes(device_id, 0x03, address, count)
+        return _registers_from_bytes(payload, count)
+
+    async def read_input_registers(
+        self, address: int, count: int, device_id: int
+    ) -> Sequence[int]:
+        """Read input register values."""
+        payload = await self._read_register_bytes(device_id, 0x04, address, count)
+        return _registers_from_bytes(payload, count)
+
+    async def write_register(self, address: int, value: int, device_id: int) -> None:
+        """Write a single holding register."""
+        _validate_register_value(value)
+        await self._write_single_value(device_id, 0x06, address, value)
+
+    async def configure_fast_modbus_events(
+        self,
+        device_id: int,
+        ranges: Sequence[FastModbusEventRange],
+    ) -> FastModbusEventConfiguration:
+        """Enable register-change event delivery for one device."""
+        settings = b"".join(_encode_fast_modbus_event_range(item) for item in ranges)
+        if len(settings) > 0xFF:
+            raise InvalidWBMR6CValueError(
+                "Fast Modbus event configuration payload is too large"
+            )
+
+        request = bytes(
+            [
+                device_id,
+                FAST_MODBUS_FUNCTION,
+                FAST_MODBUS_SUBCOMMAND_EVENT_CONFIGURATION,
+                len(settings),
+            ]
+        ) + settings
+        response = await self._execute_locked(
+            lambda serial_port: self._sync_fast_modbus_configuration(
+                serial_port,
+                device_id,
+                _append_modbus_crc(request),
+            )
+        )
+        return _decode_fast_modbus_configuration(device_id, ranges, response)
+
+    async def read_fast_modbus_events(
+        self,
+        *,
+        min_device_id: int = 0,
+        max_payload_length: int = FAST_MODBUS_DEFAULT_EVENT_PAYLOAD_LENGTH,
+    ) -> Sequence[FastModbusRegisterEvent]:
+        """Read one Fast Modbus event packet from the bus."""
+        _validate_fast_modbus_device_boundary(min_device_id)
+        _validate_fast_modbus_payload_length(max_payload_length)
+
+        confirmation = self._event_confirmation or (0, 0)
+        request = _append_modbus_crc(
+            bytes(
+                [
+                    FAST_MODBUS_ADDRESS,
+                    FAST_MODBUS_FUNCTION,
+                    FAST_MODBUS_SUBCOMMAND_EVENT_REQUEST,
+                    min_device_id,
+                    max_payload_length,
+                    confirmation[0],
+                    confirmation[1],
+                ]
+            )
+        )
+        response = await self._execute_locked(
+            lambda serial_port: self._sync_fast_modbus_event_request(
+                serial_port,
+                request,
+            )
+        )
+
+        if response is None:
+            self._event_confirmation = None
+            return ()
+
+        self._event_confirmation = (response.device_id, response.flag)
+        return response.events
+
+    async def _read_bits(
+        self,
+        device_id: int,
+        function_code: int,
+        address: int,
+        count: int,
+    ) -> bytes:
+        _validate_modbus_read_arguments(address, count)
+        expected_bytes = (count + 7) // 8
+        payload = await self._read_variable_response(
+            device_id, function_code, address, count
+        )
+        if len(payload) < expected_bytes:
+            raise WBMR6CModbusResponseError(
+                "Modbus response did not contain enough bit bytes"
+            )
+        return payload[:expected_bytes]
+
+    async def _read_register_bytes(
+        self,
+        device_id: int,
+        function_code: int,
+        address: int,
+        count: int,
+    ) -> bytes:
+        _validate_modbus_read_arguments(address, count)
+        payload = await self._read_variable_response(
+            device_id, function_code, address, count
+        )
+        expected_bytes = count * 2
+        if len(payload) < expected_bytes:
+            raise WBMR6CModbusResponseError(
+                "Modbus response did not contain enough register bytes"
+            )
+        return payload[:expected_bytes]
+
+    async def _read_variable_response(
+        self,
+        device_id: int,
+        function_code: int,
+        address: int,
+        count: int,
+    ) -> bytes:
+        request = _append_modbus_crc(
+            bytes([device_id, function_code])
+            + address.to_bytes(2, "big")
+            + count.to_bytes(2, "big")
+        )
+        return await self._execute_locked(
+            lambda serial_port: self._sync_read_variable_response(
+                serial_port,
+                device_id,
+                function_code,
+                request,
+            )
+        )
+
+    async def _write_single_value(
+        self,
+        device_id: int,
+        function_code: int,
+        address: int,
+        value: int,
+    ) -> None:
+        _validate_modbus_address(address)
+        _validate_register_value(value)
+        request_without_crc = (
+            bytes([device_id, function_code])
+            + address.to_bytes(2, "big")
+            + value.to_bytes(2, "big")
+        )
+        request = _append_modbus_crc(request_without_crc)
+        response = await self._execute_locked(
+            lambda serial_port: self._sync_read_fixed_response(
+                serial_port,
+                device_id,
+                function_code,
+                request,
+                8,
+            )
+        )
+        if response[:-2] != request_without_crc:
+            raise WBMR6CModbusResponseError(
+                f"Modbus write echo did not match request: {function_code:#04x}"
+            )
+
+    async def _execute_locked(
+        self,
+        operation: Callable[[_SerialPort], _SyncResult],
+    ) -> _SyncResult:
+        async with self._lock:
+            await self.connect()
+            last_error: WBMR6CModbusConnectionError | None = None
+            for _attempt in range(self._retries + 1):
+                try:
+                    result: _SyncResult = await asyncio.to_thread(
+                        operation,
+                        self._serial_or_raise(),
+                    )
+                    return result
+                except WBMR6CModbusConnectionError as err:
+                    last_error = err
+
+            assert last_error is not None
+            raise last_error
+
+    def _connect_sync(self) -> None:
+        if self._serial is not None and self._serial.is_open:
+            return
+
+        try:
+            factory = self._serial_factory
+            if factory is None:
+                import serial
+
+                factory = cast(Callable[..., object], serial.Serial)
+
+            self._serial = cast(
+                _SerialPort,
+                factory(
+                    port=self._port,
+                    baudrate=self._baudrate,
+                    bytesize=self._bytesize,
+                    parity=self._parity,
+                    stopbits=self._stopbits,
+                    timeout=self._timeout,
+                    write_timeout=self._timeout,
+                ),
+            )
+        except Exception as err:  # noqa: BLE001
+            self._serial = None
+            raise WBMR6CModbusConnectionError(
+                f"Unable to open Modbus serial port {self._port}"
+            ) from err
+
+    def _close_sync(self) -> None:
+        serial_port = self._serial
+        self._serial = None
+        if serial_port is None:
+            return
+        try:
+            serial_port.close()
+        except Exception as err:  # noqa: BLE001
+            raise WBMR6CModbusConnectionError(
+                f"Unable to close Modbus serial port {self._port}"
+            ) from err
+
+    def _serial_or_raise(self) -> _SerialPort:
+        if self._serial is None:
+            raise WBMR6CModbusConnectionError(
+                f"Modbus serial port {self._port} is not open"
+            )
+        return self._serial
+
+    def _sync_read_variable_response(
+        self,
+        serial_port: _SerialPort,
+        device_id: int,
+        function_code: int,
+        request: bytes,
+    ) -> bytes:
+        _write_serial_frame(serial_port, request)
+        header = self._read_standard_response_header(
+            serial_port, device_id, function_code
+        )
+        byte_count = _read_exact(serial_port, 1)[0]
+        tail = _read_exact(serial_port, byte_count + 2)
+        frame = header + bytes([byte_count]) + tail
+        _validate_modbus_frame_crc(frame)
+        return tail[:-2]
+
+    def _sync_read_fixed_response(
+        self,
+        serial_port: _SerialPort,
+        device_id: int,
+        function_code: int,
+        request: bytes,
+        response_length: int,
+    ) -> bytes:
+        _write_serial_frame(serial_port, request)
+        header = self._read_standard_response_header(
+            serial_port, device_id, function_code
+        )
+        frame = header + _read_exact(serial_port, response_length - len(header))
+        _validate_modbus_frame_crc(frame)
+        return frame
+
+    def _read_standard_response_header(
+        self,
+        serial_port: _SerialPort,
+        device_id: int,
+        function_code: int,
+    ) -> bytes:
+        header = _read_exact(serial_port, 2)
+        if header[0] != device_id:
+            raise WBMR6CModbusResponseError(
+                f"Unexpected Modbus response device id {header[0]}"
+            )
+
+        response_code = header[1]
+        if response_code == function_code | 0x80:
+            frame = header + _read_exact(serial_port, 3)
+            _validate_modbus_frame_crc(frame)
+            raise WBMR6CModbusResponseError(
+                f"Modbus request returned exception {frame[2]}: {function_code:#04x}"
+            )
+        if response_code != function_code:
+            raise WBMR6CModbusResponseError(
+                f"Unexpected Modbus response function {response_code:#04x}"
+            )
+
+        return header
+
+    def _sync_fast_modbus_configuration(
+        self,
+        serial_port: _SerialPort,
+        device_id: int,
+        request: bytes,
+    ) -> bytes:
+        _write_serial_frame(serial_port, request)
+        header = _read_exact(serial_port, 3)
+        if header[0] != device_id:
+            raise WBMR6CModbusResponseError(
+                f"Unexpected Fast Modbus response device id {header[0]}"
+            )
+        if header[1] == FAST_MODBUS_FUNCTION | 0x80:
+            frame = header + _read_exact(serial_port, 2)
+            _validate_modbus_frame_crc(frame)
+            raise WBMR6CModbusResponseError(
+                f"Fast Modbus event configuration returned exception {frame[2]}"
+            )
+        if header[1] != FAST_MODBUS_FUNCTION or (
+            header[2] != FAST_MODBUS_SUBCOMMAND_EVENT_CONFIGURATION
+        ):
+            raise WBMR6CModbusResponseError(
+                "Unexpected Fast Modbus event configuration response"
+            )
+
+        payload_length = _read_exact(serial_port, 1)[0]
+        header += bytes([payload_length])
+        tail = _read_exact(serial_port, payload_length + 2)
+        frame = header + tail
+        _validate_modbus_frame_crc(frame)
+        return tail[:-2]
+
+    def _sync_fast_modbus_event_request(
+        self,
+        serial_port: _SerialPort,
+        request: bytes,
+    ) -> _FastModbusEventPacket | None:
+        _write_serial_frame(serial_port, request)
+        first_byte = _read_frame_start(serial_port, skip_arbitration=True)
+        header = bytes([first_byte]) + _read_exact(serial_port, 2)
+        if header[1] != FAST_MODBUS_FUNCTION:
+            raise WBMR6CModbusResponseError(
+                f"Unexpected Fast Modbus response function {header[1]:#04x}"
+            )
+
+        if (
+            header[0] == FAST_MODBUS_ADDRESS
+            and header[2] == FAST_MODBUS_SUBCOMMAND_NO_EVENTS
+        ):
+            frame = header + _read_exact(serial_port, 2)
+            _validate_modbus_frame_crc(frame)
+            return None
+
+        if header[2] != FAST_MODBUS_SUBCOMMAND_EVENT_TRANSFER:
+            raise WBMR6CModbusResponseError(
+                f"Unexpected Fast Modbus event subcommand {header[2]:#04x}"
+            )
+
+        packet_header = header + _read_exact(serial_port, 3)
+        flag = packet_header[3]
+        remaining = packet_header[4]
+        payload_length = packet_header[5]
+        tail = _read_exact(serial_port, payload_length + 2)
+        frame = packet_header + tail
+        _validate_modbus_frame_crc(frame)
+        return _FastModbusEventPacket(
+            device_id=packet_header[0],
+            flag=flag,
+            events=_decode_fast_modbus_events(
+                device_id=packet_header[0],
+                flag=flag,
+                remaining=remaining,
+                payload=tail[:-2],
+            ),
+        )
+
+
 class FakeModbusTransport:
     """In-memory Modbus transport for tests and UI development."""
 
@@ -529,6 +1096,9 @@ class FakeModbusTransport:
         self.input_registers: dict[tuple[int, int], int] = {}
         self.calls: list[tuple[str, int, int | bool, int]] = []
         self.writes: list[tuple[str, int, int | bool, int]] = []
+        self.fast_event_calls: list[tuple[str, object]] = []
+        self.fast_event_ranges: dict[int, tuple[FastModbusEventRange, ...]] = {}
+        self.fast_events: list[FastModbusRegisterEvent] = []
         self.unavailable_devices: set[int] = set(unavailable_devices or ())
         self.response_error_devices: set[int] = set(response_error_devices or ())
         self.short_response_devices: set[int] = set(short_response_devices or ())
@@ -567,6 +1137,10 @@ class FakeModbusTransport:
         """Set a fake input register value."""
         _validate_register_value(value)
         self.input_registers[(device_id, address)] = value
+
+    def queue_fast_modbus_event(self, event: FastModbusRegisterEvent) -> None:
+        """Queue a fake Fast Modbus event packet entry."""
+        self.fast_events.append(event)
 
     async def read_coils(
         self, address: int, count: int, device_id: int
@@ -630,6 +1204,41 @@ class FakeModbusTransport:
         self._check_device(device_id)
         self.holding_registers[(device_id, address)] = value
         self.writes.append(("write_register", address, value, device_id))
+
+    async def configure_fast_modbus_events(
+        self,
+        device_id: int,
+        ranges: Sequence[FastModbusEventRange],
+    ) -> FastModbusEventConfiguration:
+        """Store fake Fast Modbus event configuration."""
+        self.fast_event_calls.append(("configure_fast_modbus_events", device_id))
+        self._check_device(device_id)
+        ranges_tuple = tuple(ranges)
+        self.fast_event_ranges[device_id] = ranges_tuple
+        enabled = {
+            (int(_validate_fast_modbus_register_type(item.register_type)), address)
+            for item in ranges_tuple
+            for address in range(item.address, item.address + len(tuple(item.priorities)))
+        }
+        return FastModbusEventConfiguration(device_id, frozenset(enabled))
+
+    async def read_fast_modbus_events(
+        self,
+        *,
+        min_device_id: int = 0,
+        max_payload_length: int = FAST_MODBUS_DEFAULT_EVENT_PAYLOAD_LENGTH,
+    ) -> Sequence[FastModbusRegisterEvent]:
+        """Return and clear queued fake Fast Modbus events."""
+        self.fast_event_calls.append(("read_fast_modbus_events", min_device_id))
+        _validate_fast_modbus_device_boundary(min_device_id)
+        _validate_fast_modbus_payload_length(max_payload_length)
+        events = tuple(
+            event for event in self.fast_events if event.device_id >= min_device_id
+        )
+        self.fast_events = [
+            event for event in self.fast_events if event.device_id < min_device_id
+        ]
+        return events
 
     def _check_device(self, device_id: int) -> None:
         if device_id in self.unavailable_devices:
@@ -1321,6 +1930,265 @@ def press_counter_delta(previous: int | None, current: int) -> int:
         return 0
     _validate_register_value(previous)
     return (current - previous) % PRESS_COUNTER_MODULO
+
+
+def firmware_supports_fast_modbus_events(
+    version: str | Sequence[int],
+) -> bool:
+    """Return whether relay-module firmware supports Fast Modbus events."""
+    return _firmware_version_tuple(version) >= MIN_FIRMWARE_FAST_MODBUS_EVENTS
+
+
+def firmware_supports_mcm8_fast_modbus_events(
+    version: str | Sequence[int],
+) -> bool:
+    """Return whether WB-MCM8 firmware supports Fast Modbus events."""
+    return _firmware_version_tuple(version) >= MIN_FIRMWARE_MCM8_FAST_MODBUS_EVENTS
+
+
+def modbus_crc(data: bytes) -> int:
+    """Return the Modbus RTU CRC16 for a frame without the CRC trailer."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _bit in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc & 0xFFFF
+
+
+def _append_modbus_crc(data: bytes) -> bytes:
+    crc = modbus_crc(data)
+    return data + crc.to_bytes(2, "little")
+
+
+def _validate_modbus_frame_crc(frame: bytes) -> None:
+    if len(frame) < 3:
+        raise WBMR6CModbusResponseError("Modbus frame is too short")
+    expected_crc = int.from_bytes(frame[-2:], "little")
+    actual_crc = modbus_crc(frame[:-2])
+    if actual_crc != expected_crc:
+        raise WBMR6CModbusResponseError("Modbus response CRC mismatch")
+
+
+def _bits_from_bytes(payload: bytes, count: int) -> list[bool]:
+    if len(payload) * 8 < count:
+        raise WBMR6CModbusResponseError("Modbus response did not contain enough bits")
+    return [
+        bool(payload[offset // 8] & (1 << (offset % 8)))
+        for offset in range(count)
+    ]
+
+
+def _registers_from_bytes(payload: bytes, count: int) -> list[int]:
+    if len(payload) < count * 2:
+        raise WBMR6CModbusResponseError(
+            "Modbus response did not contain enough registers"
+        )
+    return [
+        int.from_bytes(payload[offset : offset + 2], "big")
+        for offset in range(0, count * 2, 2)
+    ]
+
+
+def _write_serial_frame(serial_port: _SerialPort, frame: bytes) -> None:
+    try:
+        serial_port.reset_input_buffer()
+        written = serial_port.write(frame)
+        if written is not None and int(written) != len(frame):
+            raise WBMR6CModbusConnectionError("Serial write was incomplete")
+        serial_port.flush()
+    except WBMR6CModbusConnectionError:
+        raise
+    except Exception as err:  # noqa: BLE001
+        raise WBMR6CModbusConnectionError("Serial write failed") from err
+
+
+def _read_exact(serial_port: _SerialPort, count: int) -> bytes:
+    data = bytearray()
+    try:
+        while len(data) < count:
+            chunk = serial_port.read(count - len(data))
+            if not chunk:
+                break
+            data.extend(bytes(chunk))
+    except Exception as err:  # noqa: BLE001
+        raise WBMR6CModbusConnectionError("Serial read failed") from err
+
+    if len(data) != count:
+        raise WBMR6CModbusConnectionError("Timed out waiting for Modbus response")
+    return bytes(data)
+
+
+def _read_frame_start(serial_port: _SerialPort, *, skip_arbitration: bool) -> int:
+    while True:
+        value = _read_exact(serial_port, 1)[0]
+        if not skip_arbitration or value != 0xFF:
+            return value
+
+
+def _encode_fast_modbus_event_range(item: FastModbusEventRange) -> bytes:
+    register_type = _validate_fast_modbus_register_type(item.register_type)
+    _validate_modbus_address(item.address)
+    priorities = tuple(
+        _validate_fast_modbus_event_priority(priority)
+        for priority in item.priorities
+    )
+    if not priorities:
+        raise InvalidWBMR6CValueError(
+            "Fast Modbus event range must contain at least one register"
+        )
+    if len(priorities) > 0xFF:
+        raise InvalidWBMR6CValueError("Fast Modbus event range is too large")
+
+    return (
+        bytes([int(register_type)])
+        + item.address.to_bytes(2, "big")
+        + bytes([len(priorities)])
+        + bytes(int(priority) for priority in priorities)
+    )
+
+
+def _decode_fast_modbus_configuration(
+    device_id: int,
+    ranges: Sequence[FastModbusEventRange],
+    response: bytes,
+) -> FastModbusEventConfiguration:
+    enabled: set[tuple[int, int]] = set()
+    offset = 0
+    for item in ranges:
+        register_type = int(_validate_fast_modbus_register_type(item.register_type))
+        count = len(tuple(item.priorities))
+        byte_count = (count + 7) // 8
+        if len(response) < offset + byte_count:
+            raise WBMR6CModbusResponseError(
+                "Fast Modbus event configuration response is too short"
+            )
+        mask = response[offset : offset + byte_count]
+        offset += byte_count
+        for index in range(count):
+            if mask[index // 8] & (1 << (index % 8)):
+                enabled.add((register_type, item.address + index))
+
+    if offset != len(response):
+        raise WBMR6CModbusResponseError(
+            "Fast Modbus event configuration response has trailing data"
+        )
+    return FastModbusEventConfiguration(device_id, frozenset(enabled))
+
+
+def _decode_fast_modbus_events(
+    *,
+    device_id: int,
+    flag: int,
+    remaining: int,
+    payload: bytes,
+) -> tuple[FastModbusRegisterEvent, ...]:
+    events: list[FastModbusRegisterEvent] = []
+    offset = 0
+    while offset < len(payload):
+        if len(payload) - offset < 4:
+            raise WBMR6CModbusResponseError("Fast Modbus event payload is truncated")
+        value_length = payload[offset]
+        event_type = payload[offset + 1]
+        address = int.from_bytes(payload[offset + 2 : offset + 4], "big")
+        event_end = offset + 4 + value_length
+        if event_end > len(payload):
+            raise WBMR6CModbusResponseError("Fast Modbus event value is truncated")
+        raw_value = payload[offset + 4 : event_end]
+        events.append(
+            FastModbusRegisterEvent(
+                device_id=device_id,
+                flag=flag,
+                remaining=remaining,
+                register_type=event_type,
+                address=address,
+                value=_decode_fast_modbus_event_value(event_type, raw_value),
+                payload=raw_value,
+            )
+        )
+        offset = event_end
+
+    return tuple(events)
+
+
+def _decode_fast_modbus_event_value(event_type: int, payload: bytes) -> int | bool | None:
+    if event_type in {
+        int(FastModbusRegisterType.COIL),
+        int(FastModbusRegisterType.DISCRETE_INPUT),
+    }:
+        if not payload:
+            return None
+        return bool(payload[0])
+    if event_type in {
+        int(FastModbusRegisterType.HOLDING_REGISTER),
+        int(FastModbusRegisterType.INPUT_REGISTER),
+    }:
+        if not payload:
+            return None
+        return int.from_bytes(payload, "little")
+    return None
+
+
+def _validate_modbus_read_arguments(address: int, count: int) -> None:
+    _validate_modbus_address(address)
+    if not _is_int_value(count) or not 1 <= count <= 0x7D:
+        raise InvalidWBMR6CValueError(
+            f"Invalid Modbus register count {count!r}; expected 1..125"
+        )
+
+
+def _validate_modbus_address(address: int) -> None:
+    if not _is_int_value(address) or not 0 <= address <= REGISTER_U16_MAX:
+        raise InvalidWBMR6CAddressError(
+            f"Invalid Modbus address {address!r}; expected 0..65535"
+        )
+
+
+def _validate_fast_modbus_device_boundary(device_id: int) -> None:
+    if not _is_int_value(device_id) or not 0 <= device_id <= 247:
+        raise InvalidWBMR6CAddressError(
+            f"Invalid Fast Modbus device boundary {device_id!r}; expected 0..247"
+        )
+
+
+def _validate_fast_modbus_payload_length(length: int) -> None:
+    if not _is_int_value(length) or not 0 <= length <= 0xF9:
+        raise InvalidWBMR6CValueError(
+            f"Invalid Fast Modbus payload length {length!r}; expected 0..249"
+        )
+
+
+def _validate_fast_modbus_register_type(
+    register_type: FastModbusRegisterType | int,
+) -> FastModbusRegisterType:
+    if not _is_int_value(register_type):
+        raise InvalidWBMR6CValueError(
+            f"Invalid Fast Modbus register type {register_type!r}"
+        )
+    try:
+        return FastModbusRegisterType(register_type)
+    except ValueError as err:
+        raise InvalidWBMR6CValueError(
+            f"Invalid Fast Modbus register type {register_type!r}"
+        ) from err
+
+
+def _validate_fast_modbus_event_priority(
+    priority: FastModbusEventPriority | int,
+) -> FastModbusEventPriority:
+    if not _is_int_value(priority):
+        raise InvalidWBMR6CValueError(
+            f"Invalid Fast Modbus event priority {priority!r}"
+        )
+    try:
+        return FastModbusEventPriority(priority)
+    except ValueError as err:
+        raise InvalidWBMR6CValueError(
+            f"Invalid Fast Modbus event priority {priority!r}"
+        ) from err
 
 
 def _extract_bits(response: _BitModbusResponse, count: int) -> Sequence[bool]:

@@ -388,6 +388,25 @@ class IdentificationTest(unittest.TestCase):
         self.assertTrue(
             wb_mr6c_modbus.firmware_supports_relay_state_discrete_inputs((1, 24, 0))
         )
+        self.assertFalse(
+            wb_mr6c_modbus.firmware_supports_fast_modbus_events("1.19.9")
+        )
+        self.assertTrue(
+            wb_mr6c_modbus.firmware_supports_fast_modbus_events("1.20.0")
+        )
+        self.assertFalse(
+            wb_mr6c_modbus.firmware_supports_mcm8_fast_modbus_events("1.5.9")
+        )
+        self.assertTrue(
+            wb_mr6c_modbus.firmware_supports_mcm8_fast_modbus_events("1.6.0")
+        )
+
+    def test_modbus_crc_matches_documented_fast_modbus_frame(self) -> None:
+        frame = bytes.fromhex("FD 46 01")
+        self.assertEqual(
+            wb_mr6c_modbus.modbus_crc(frame).to_bytes(2, "little"),
+            bytes.fromhex("13 90"),
+        )
 
     def test_press_counter_delta(self) -> None:
         self.assertEqual(wb_mr6c_modbus.press_counter_delta(None, 42), 0)
@@ -519,6 +538,67 @@ class PymodbusSerialTransportTest(unittest.IsolatedAsyncioTestCase):
             await transport.write_register(0, 0x10000, 1)
 
         self.assertEqual(client.calls, [])
+
+
+class FastModbusSerialTransportTest(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_event_transfer_packet_is_confirmed_on_next_request(
+        self,
+    ) -> None:
+        class StubFastTransport(wb_mr6c_modbus.FastModbusSerialTransport):
+            def __init__(self) -> None:
+                self._event_confirmation: tuple[int, int] | None = None
+                self.requests: list[bytes] = []
+                self.responses = [
+                    wb_mr6c_modbus._FastModbusEventPacket(
+                        device_id=5,
+                        flag=1,
+                        events=(),
+                    ),
+                    None,
+                ]
+
+            async def _execute_locked(self, operation: object) -> object:
+                return operation(object())
+
+            def _sync_fast_modbus_event_request(
+                self, serial_port: object, request: bytes
+            ) -> object:
+                self.requests.append(request)
+                return self.responses.pop(0)
+
+        transport = StubFastTransport()
+
+        self.assertEqual(await transport.read_fast_modbus_events(), ())
+        self.assertEqual(await transport.read_fast_modbus_events(), ())
+
+        self.assertEqual(
+            transport.requests[0][:7],
+            bytes(
+                [
+                    wb_mr6c_modbus.FAST_MODBUS_ADDRESS,
+                    wb_mr6c_modbus.FAST_MODBUS_FUNCTION,
+                    wb_mr6c_modbus.FAST_MODBUS_SUBCOMMAND_EVENT_REQUEST,
+                    0,
+                    wb_mr6c_modbus.FAST_MODBUS_DEFAULT_EVENT_PAYLOAD_LENGTH,
+                    0,
+                    0,
+                ]
+            ),
+        )
+        self.assertEqual(
+            transport.requests[1][:7],
+            bytes(
+                [
+                    wb_mr6c_modbus.FAST_MODBUS_ADDRESS,
+                    wb_mr6c_modbus.FAST_MODBUS_FUNCTION,
+                    wb_mr6c_modbus.FAST_MODBUS_SUBCOMMAND_EVENT_REQUEST,
+                    0,
+                    wb_mr6c_modbus.FAST_MODBUS_DEFAULT_EVENT_PAYLOAD_LENGTH,
+                    5,
+                    1,
+                ]
+            ),
+        )
 
 
 class FakeModbusTransportTest(unittest.IsolatedAsyncioTestCase):

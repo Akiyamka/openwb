@@ -40,8 +40,8 @@ from .devices import (
     create_device_client,
 )
 from .transport import (
+    FastModbusSerialTransport as PymodbusSerialTransport,
     ManagedModbusTransport,
-    PymodbusSerialTransport,
 )
 from .wb_mr6c_modbus import (
     WBMR6CModbusConnectionError,

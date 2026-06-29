@@ -8,6 +8,7 @@ from ..wb_mr6c_modbus import (
     MCM8_MODEL,
     WBMR6CModbus,
     WBMCM8_MODEL,
+    firmware_supports_mcm8_fast_modbus_events,
     firmware_supports_mcm8_press_counters,
 )
 from .base import OpenWBDeviceDefinition
@@ -26,4 +27,5 @@ DEFINITION = OpenWBDeviceDefinition(
     ),
     press_counter_input_registers=True,
     press_counter_firmware_gate=firmware_supports_mcm8_press_counters,
+    fast_modbus_events_firmware_gate=firmware_supports_mcm8_fast_modbus_events,
 )
