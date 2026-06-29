@@ -116,12 +116,6 @@ It should define:
 - helper functions for address calculation;
 - validation for channel numbers, input numbers, output numbers, and register values.
 
-Current file:
-
-```text
-custom_components/openwb/wb_mr6c_modbus.py
-```
-
 This layer is where the Wiren Board documentation is translated into code.
 
 ### Input Press Counters
@@ -480,9 +474,7 @@ Services should call the same backend client methods used by entities. Do not du
 
 ## Error Handling
 
-Transport errors should be converted to Home Assistant-friendly exceptions at the integration boundary.
-
-Recommended behavior:
+Transport errors should be converted to Home Assistant-friendly exceptions at the integration boundary:
 
 - a failed serial-port open in the bus `async_setup_entry` raises `ConfigEntryNotReady` so HA retries setup with backoff;
 - `async_unload_entry` closes the bus transport so the serial port is released and no master leaks across reloads;
@@ -491,46 +483,3 @@ Recommended behavior:
 - invalid user input fails before writing to Modbus;
 - repeated connection failures should not spam logs — `DataUpdateCoordinator` already logs once and suppresses identical repeats, so no extra throttling is needed.
 
-## Testing Strategy
-
-Unit tests should cover the pure backend without Home Assistant:
-
-- register address helpers (including press-counter addresses and input 0 at `base + 7`);
-- invalid channel/input/output validation;
-- relay one-shot command addresses;
-- settings register reads/writes;
-- mapping matrix address calculations;
-- counter-delta press detection: positive delta fires, `0xFFFF` wraparound, and no event on the first (baseline) read;
-- model/firmware string decoding (ASCII registers, null-terminated) and version-tuple gating: FW `< 1.17.0` omits press counters, FW `< 1.24.0` falls back for relay state;
-- error response handling.
-
-Home Assistant tests should cover:
-
-- bus config flow accepts valid serial parameters and aborts a duplicate serial port;
-- device subentry flow accepts a valid `device_id`, rejects an invalid/non-responding one, and aborts a duplicate address on the same bus;
-- two buses may hold the same `device_id` as distinct devices/entities (bus-scoped identity);
-- the one bus coordinator maps per-device backend data to the right device's entity states;
-- one unreachable device goes unavailable while the rest of the bus stays up; a port-level failure marks the whole bus unavailable;
-- switch writes call the correct backend methods and set optimistic state without forcing a refresh;
-- press counter increments produce `event` entity firings;
-- `ConfigEntryNotReady` on port-open failure and transport close on unload;
-- entity and UI-facing behavior can be tested with fake backend data and no physical device.
-
-## Suggested Implementation Order
-
-1. Keep `wb_mr6c_modbus.py` as the pure device backend; add the press-counter registers.
-2. Add the serial transport (`AsyncModbusSerialClient`) implementing `ModbusTransport`.
-3. Add the bus config flow (serial parameters, `wb_mr6c_bus:{serial_port}` unique_id) and a device subentry flow (`device_id`; read the model register at `200` to validate it really is a WB-MR6C).
-4. Add bus-level runtime data and a setup/unload lifecycle that opens/closes the one transport per bus (`ConfigEntryNotReady` on port-open failure); at setup read each device's firmware (`250`) and gate FW-dependent features (press counters, relay-state discrete inputs).
-5. Add one `DataUpdateCoordinator` per bus that polls every device subentry, keyed by `device_id`, with per-device partial failure.
-6. Add `switch` entities for relay outputs (optimistic writes).
-7. Add `binary_sensor` entities for input level.
-8. Add `event` entities for input presses (counter-delta detection in the coordinator).
-9. Add tests for bus/subentry config flow and entity behavior.
-10. Add device-settings read/write client operations.
-11. Add mapping-matrix read / diff-write client operations.
-
-## Open Decisions
-
-- The exact fast-poll interval and cycle budget per bus (default ~1 s) — and whether to expose it as a per-bus setting given varying bus sizes.
-- When to implement Wiren Board fast Modbus, and whether it replaces or supplements interval polling.
